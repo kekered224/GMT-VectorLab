@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# PyInstaller 产物
+build/
+dist/
+*.spec~
+
+# 运行时生成
+gmt_vectorlab_selftest.json
+*.pdf
+*.png
+work/
+.tmp/
+_tmp_*/
+
+# 测试 / 检查缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 日志
+*.log
+
+# 编辑器 / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 预编译二进制（走 Releases 分发，不入库）
+*.exe
+*.app
