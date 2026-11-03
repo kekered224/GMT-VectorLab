@@ -57,7 +57,7 @@ GMT VectorLab 在这一点上补了一层可视化编辑：
 ### 方式二：从源码运行
 
 ```bash
-git clone <your-repo-url> GMT-VectorLab
+git clone https://github.com/kekered224/GMT-VectorLab.git
 cd GMT-VectorLab
 pip install -r requirements.txt
 
