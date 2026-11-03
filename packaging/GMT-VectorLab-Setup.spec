@@ -1,8 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
-# 安装器 spec —— 内嵌 GMT-VectorLab.exe(便携版), 运行时解压到
-# %LOCALAPPDATA%\Programs\GMT-VectorLab, 并在开始菜单/桌面创建快捷方式 + 卸载脚本。
+# 安装器 spec —— 内嵌 GMT-VectorLab.exe(便携版) + runtime.zip(内置 GMT 运行时),
+# 运行时解压到 %LOCALAPPDATA%\Programs\GMT-VectorLab, 并在开始菜单/桌面创建快捷方式 + 卸载脚本。
 #
-# 构建前: 先把便携版 GMT-VectorLab.exe (由根目录 GMT-VectorLab.spec 产出) 复制到本目录。
+# 构建前: 先把便携版 GMT-VectorLab.exe (由根目录 GMT-VectorLab.spec 产出) 复制到本目录,
+#         并把内置运行时压缩成 packaging/runtime.zip (zip 内直接是 gmt/ 与 bash/, 不含外层 runtime/)。
 #   pyinstaller packaging/GMT-VectorLab-Setup.spec
 import os
 
@@ -15,6 +16,7 @@ a = Analysis(
     binaries=[],
     datas=[
         (os.path.join(HERE, 'GMT-VectorLab.exe'), '.'),
+        (os.path.join(HERE, 'runtime.zip'), '.'),
     ],
     hiddenimports=[],
     hookspath=[],

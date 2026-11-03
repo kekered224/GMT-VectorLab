@@ -262,7 +262,8 @@ def main():
         summary = {"work": WORK, "script": SCRIPT}
         try:
             summary["shell"] = GE._find_shell()
-            summary["gmt_on_path"] = "gmt6" in GE._gmt_env().get("PATH", "")
+            summary["runtime"] = GE._bundled_runtime()
+            summary["gmt_dir"] = GE._find_gmt_dir()
             out = core.render(WORK, SCRIPT, {"ops": []})
             png = out.get("png_path")
             summary["render"] = {

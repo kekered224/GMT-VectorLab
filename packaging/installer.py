@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""GMT VectorLab 轻量安装器 (单文件 exe, 内嵌应用本体)。
+"""GMT VectorLab 轻量安装器 (单文件 exe, 内嵌应用本体 + 内置 GMT 运行时)。
 
 行为:
   - 默认安装到 %LOCALAPPDATA%\\Programs\\GMT-VectorLab (无需管理员/UAC)
+  - 解压内置 runtime/ (GMT + Ghostscript + bash), 安装后无需另外装 GMT
   - 在开始菜单与桌面创建快捷方式, 并在开始菜单创建"卸载"快捷方式
   - 安装目录下写入 uninstall.bat 用于卸载
   - 支持 --dir=<路径> 自定义安装位置(静默安装, 便于测试/便携部署)
@@ -14,12 +15,21 @@ import subprocess
 import tempfile
 import traceback
 import ctypes
+import zipfile
 
 
 def bundle_exe():
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
         return os.path.join(sys._MEIPASS, "GMT-VectorLab.exe")
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "GMT-VectorLab.exe")
+
+
+def bundle_runtime():
+    """内嵌的 runtime.zip (GMT + Ghostscript + bash)。"""
+    base = sys._MEIPASS if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS") \
+        else os.path.dirname(os.path.abspath(__file__))
+    p = os.path.join(base, "runtime.zip")
+    return p if os.path.isfile(p) else None
 
 
 def mb(title, text, style=0):
@@ -31,7 +41,12 @@ def mb(title, text, style=0):
 
 def default_install_dir():
     base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.path.expanduser("~")
-    return os.path.join(base, "Programs", "GMT-VectorLab")
+    d = os.path.join(base, "Programs", "GMT-VectorLab")
+    if not d.isascii():
+        # GMT 的 Windows 版打不开含中文的路径; 用户名是中文时改到公共目录 (无需管理员)
+        pub = os.environ.get("PUBLIC") or r"C:\Users\Public"
+        d = os.path.join(pub, "GMT-VectorLab")
+    return d
 
 
 def create_shortcut(lnk_path, target, working_dir, description):
@@ -83,6 +98,18 @@ def install(inst_dir, src_exe, silent=False):
         os.makedirs(inst_dir, exist_ok=True)
         dst = os.path.join(inst_dir, "GMT-VectorLab.exe")
         shutil.copy2(src_exe, dst)
+
+        # 内置运行时: 解压到 <安装目录>\runtime, 应用启动时自动优先使用
+        rz = bundle_runtime()
+        if not rz:
+            raise RuntimeError("安装包损坏: 缺少内嵌的 runtime.zip (内置 GMT 运行时)。")
+        rt_dir = os.path.join(inst_dir, "runtime")
+        if os.path.isdir(rt_dir):
+            shutil.rmtree(rt_dir)
+        os.makedirs(rt_dir, exist_ok=True)
+        with zipfile.ZipFile(rz) as z:
+            z.extractall(rt_dir)
+
         write_uninstaller(inst_dir)
 
         appdata = os.environ.get("APPDATA", "")
@@ -134,7 +161,9 @@ def main():
     # MB_YESNOCANCEL = 3 ; IDYES = 6
     res = mb(
         "GMT VectorLab 安装",
-        "GMT VectorLab 将安装到:\n%s\n\n点击“是”开始安装，“否”取消。" % inst,
+        "GMT VectorLab 将安装到:\n%s\n\n"
+        "安装包内含 GMT 运行时（约 400 MB），解压需要一点时间，请耐心等待。\n\n"
+        "点击“是”开始安装，“否”取消。" % inst,
         3,
     )
     if res == 6:

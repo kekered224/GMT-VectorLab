@@ -37,3 +37,7 @@ Thumbs.db
 # 预编译二进制（走 Releases 分发，不入库）
 *.exe
 *.app
+
+# 内置运行时（体积大，走 Releases 分发）
+runtime/
+packaging/runtime.zip

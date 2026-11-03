@@ -378,6 +378,91 @@ def _is_bad_shell(p):
     里面没有 Windows 的 gmt.exe, 跑 GMT 脚本会 rc=127 command not found。"""
     return "windowsapps" in (p or "").lower()
 
+def _app_base_dir():
+    """程序所在目录: 打包后为 exe 同级, 开发运行时为源码目录。"""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+_RT_ASCII_CACHE = {"src": None, "view": None}
+
+def _ascii_runtime_view(rt):
+    """运行时目录若含中文/非 ASCII, 建一个 ASCII 名的目录联接再交给 GMT:
+    GMT 的 Windows 版用窄字符 API, 路径里有中文就打不开 shorelines 等共享数据。
+    联接不占空间、不需要管理员; 建不成时退回原路径。"""
+    if rt.isascii() or os.name != "nt":
+        return rt
+    if _RT_ASCII_CACHE["src"] == rt:
+        return _RT_ASCII_CACHE["view"]
+    pub = os.environ.get("PUBLIC") or r"C:\Users\Public"
+    base = os.path.join(pub, "GMT-VectorLab")
+    link = os.path.join(base, "runtime-" + hashlib.sha256(rt.encode("utf-8")).hexdigest()[:10])
+    view = rt
+    try:
+        os.makedirs(base, exist_ok=True)
+        if os.path.isfile(os.path.join(link, "gmt", "bin", "gmt.exe")):
+            view = link
+        else:
+            if os.path.lexists(link):
+                try:
+                    os.rmdir(link)          # 目录联接: 只删链接, 不动目标
+                except OSError:
+                    pass
+            r = subprocess.run(["cmd", "/c", "mklink", "/J", link, rt],
+                               capture_output=True, **_hidden_console_kwargs())
+            if r.returncode == 0 and os.path.isfile(os.path.join(link, "gmt", "bin", "gmt.exe")):
+                view = link
+    except Exception:
+        view = rt
+    _RT_ASCII_CACHE["src"] = rt
+    _RT_ASCII_CACHE["view"] = view
+    return view
+
+def _bundled_runtime():
+    """内置运行时根目录 (含 gmt/bin/gmt.exe), 没有则返回 None。
+
+    查找顺序: GVL_RUNTIME 环境变量 -> 程序目录/runtime -> 上一级/runtime。
+    安装版与全量便携版都带 runtime/, 因此优先于系统 GMT。
+    路径含非 ASCII 字符时, 返回等价的 ASCII 目录联接 (GMT 窄字符 API 打不开中文路径)。"""
+    env = os.environ.get("GVL_RUNTIME", "")
+    if env and os.path.isfile(os.path.join(env, "gmt", "bin", "gmt.exe")):
+        return _ascii_runtime_view(os.path.abspath(env))
+    base = _app_base_dir()
+    for b in (base, os.path.dirname(base)):
+        d = os.path.join(b, "runtime")
+        if os.path.isfile(os.path.join(d, "gmt", "bin", "gmt.exe")):
+            return _ascii_runtime_view(d)
+    return None
+
+def _ascii_user_dir():
+    """GMT 在 Windows 上无法处理含中文/空格的主目录, 内置运行时改用纯 ASCII 缓存目录。"""
+    cands = []
+    la = os.environ.get("LOCALAPPDATA")
+    pub = os.environ.get("PUBLIC") or (r"C:\Users\Public" if os.name == "nt" else None)
+    pd = os.environ.get("ProgramData")
+    if la:
+        cands.append(os.path.join(la, "GMT-VectorLab", ".gmt"))
+    if pub:
+        cands.append(os.path.join(pub, "GMT-VectorLab", ".gmt"))
+    if pd:
+        cands.append(os.path.join(pd, "GMT-VectorLab", ".gmt"))
+    cands.append(os.path.join(tempfile.gettempdir(), "GMT-VectorLab", ".gmt"))
+    for c in cands:
+        if not all(ord(ch) < 128 for ch in c):
+            continue
+        try:
+            os.makedirs(os.path.join(c, "tmp"), exist_ok=True)
+            return c
+        except OSError:
+            continue
+    for c in cands:
+        try:
+            os.makedirs(os.path.join(c, "tmp"), exist_ok=True)
+            return c
+        except OSError:
+            continue
+    return None
+
 def _find_shell():
     if os.name != "nt":
         for name in ("bash", "sh"):
@@ -385,6 +470,15 @@ def _find_shell():
             if p:
                 return p
         return None
+    # 0) 内置 runtime 的 bash/sh 最优先 (MinGit 只带 sh.exe, 实为 bash 5)
+    rt = _bundled_runtime()
+    if rt:
+        for sub in (("bash", "bin", "bash.exe"),
+                    ("bash", "usr", "bin", "bash.exe"),
+                    ("bash", "usr", "bin", "sh.exe")):
+            c = os.path.join(rt, *sub)
+            if os.path.exists(c) and not _is_bad_shell(c):
+                return c
     # 1) 优先 Git for Windows 的 bash (能可靠跑 GMT 现代模式脚本)
     git = shutil.which("git.exe") or shutil.which("git")
     roots = []
@@ -457,9 +551,15 @@ def _find_gmt_dir():
     if _GMT_DIR_CACHE["done"]:
         return _GMT_DIR_CACHE["dir"]
     found = None
-    g = shutil.which("gmt.exe") or shutil.which("gmt")
-    if g:
-        found = os.path.dirname(os.path.abspath(g))
+    rt = _bundled_runtime()
+    if rt:
+        gd = os.path.join(rt, "gmt", "bin")
+        if os.path.isfile(os.path.join(gd, "gmt.exe")):
+            found = gd
+    if not found:
+        g = shutil.which("gmt.exe") or shutil.which("gmt")
+        if g:
+            found = os.path.dirname(os.path.abspath(g))
     if not found:
         # 合并当前 PATH + 注册表 PATH, 逐目录找 gmt.exe
         seen = set()
@@ -504,8 +604,45 @@ def _find_gmt_dir():
 
 def _gmt_env():
     """确保子进程 PATH 既包含系统(注册表)PATH, 又显式含 GMT 目录 —— 避免双击启动时
-    gmt.exe 不在 PATH 上导致 bash 返回 rc=127 (command not found)。"""
+    gmt.exe 不在 PATH 上导致 bash 返回 rc=127 (command not found)。
+
+    有内置 runtime 时: 只在本进程环境里把内置目录排到最前, 并覆盖 GMT6_* 与
+    GMT_USERDIR/GMT_TMPDIR, 不写注册表/不改系统 PATH —— 系统里已装的 GMT 不受影响,
+    也不会被误用。"""
     env = dict(os.environ)
+    rt = _bundled_runtime()
+    if rt:
+        gmt_bin = os.path.join(rt, "gmt", "bin")
+        bash_bin = os.path.join(rt, "bash", "usr", "bin")
+        cur = [p for p in env.get("PATH", "").split(os.pathsep) if p]
+        merged, seen = [], set()
+        for p in [gmt_bin] + ([bash_bin] if os.path.isdir(bash_bin) else []) + cur + _registry_path():
+            pl = p.lower()
+            if p and pl not in seen:
+                seen.add(pl)
+                merged.append(p)
+        env["PATH"] = os.pathsep.join(merged)
+        share = os.path.join(rt, "gmt", "share")
+        env["GMT6_SHAREDIR"] = share
+        env["GMT6_DATADIR"] = share
+        env["GMT6_PLUGINDIR"] = os.path.join(gmt_bin, "gmt_plugins")
+        # GDAL/PROJ 数据也跟着内置运行时走, 否则可能被系统里别的安装指到不匹配的版本
+        gdal_data = os.path.join(share, "GDAL_DATA")
+        proj_data = os.path.join(share, "proj")
+        if os.path.isdir(gdal_data):
+            env["GDAL_DATA"] = gdal_data
+        if os.path.isdir(proj_data):
+            env["PROJ_DATA"] = proj_data
+            env["PROJ_LIB"] = proj_data
+        # 系统里可能残留的旧变量会把内置 GMT 指到外部安装, 必须清掉
+        for k in ("GMT_SHAREDIR", "GMT_DATADIR", "GMT_PLUGINDIR",
+                  "GMT_LIBRARY_PATH", "GMT_CUSTOM_LIBS"):
+            env.pop(k, None)
+        ud = _ascii_user_dir()
+        if ud:
+            env["GMT_USERDIR"] = ud
+            env["GMT_TMPDIR"] = os.path.join(ud, "tmp")
+        return env
     cur = [p for p in env.get("PATH", "").split(os.pathsep) if p]
     merged, seen = [], set()
     for p in cur + _registry_path():
