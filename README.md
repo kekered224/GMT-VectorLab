@@ -35,6 +35,15 @@ GMT VectorLab 在这一点上补了一层可视化编辑：
 
 **从源码运行 / 自行打包**：需要 **GMT 6.x**、**Ghostscript**、**bash**（Windows 推荐 Git for Windows 自带）与 **Python 3.10+**。
 
+内置运行时包含以下组件（解压约 420 MB）：
+
+| 组件 | 版本 | 用途 |
+| --- | --- | --- |
+| [GMT](https://www.generic-mapping-tools.org/) | 6.7.0 | 渲染引擎 |
+| Ghostscript | 10.07（随 GMT 官方包） | PDF / PNG 输出 |
+| GDAL / PROJ / FFmpeg | 随 GMT 官方包 | 数据与格式支持 |
+| MinGit bash | 2.56.0.4 | 执行 `gmt begin … gmt end` 脚本 |
+
 > 内置运行时只作用于程序自己的子进程：不改注册表、不改系统 PATH。机器上已经装了 GMT 的用户可以照常用自己的版本，两者不会冲突；内置版始终优先使用自带的那一份。
 
 ---
@@ -43,13 +52,24 @@ GMT VectorLab 在这一点上补了一层可视化编辑：
 
 ### 方式一：下载预编译程序（推荐）
 
-到仓库的 [Releases](https://github.com/kekered224/GMT-VectorLab/releases/latest) 页面下载，提供三种形态：
+到仓库的 [Releases](https://github.com/kekered224/GMT-VectorLab/releases/latest) 页面下载，提供四种形态：
 
-- **`GMT-VectorLab-Portable.zip`（内置运行时 · 便携版）**：解压后双击 `GMT-VectorLab.exe` 即用，不写注册表、无需安装，可放 U 盘。整个目录一起移动即可。
-- **`GMT-VectorLab-Setup.exe`（内置运行时 · 安装版）**：双击安装到 `%LOCALAPPDATA%\Programs\GMT-VectorLab`（无需管理员权限；用户名含中文时自动装到 `C:\Users\Public\GMT-VectorLab`），自动创建开始菜单/桌面快捷方式与卸载入口。
-- **`GMT-VectorLab.exe`（轻量版）**：单文件，仅适合本机已装好 GMT 6 + Ghostscript 的用户。
+| 下载项 | 说明 |
+| --- | --- |
+| `GMT-VectorLab-Example-<版本>.zip` | **内置运行时 · 示例版**：解压后双击 `启动示例.bat`，直接打开南中国海站点图。第一次使用推荐这个。 |
+| `GMT-VectorLab-Portable-<版本>.zip` | **内置运行时 · 便携版**：解压后双击 `GMT-VectorLab.exe`，再打开自己的脚本。不写注册表，可放 U 盘。 |
+| `GMT-VectorLab-Setup.exe` | **内置运行时 · 安装版**：双击安装到 `%LOCALAPPDATA%\Programs\GMT-VectorLab`（无需管理员权限；用户名含中文时自动装到 `C:\Users\Public\GMT-VectorLab`），自动创建开始菜单/桌面快捷方式与卸载入口。 |
+| `GMT-VectorLab.exe` | **轻量版**：单文件，仅适合本机已装好 GMT 6 + Ghostscript 的用户。 |
 
-内置运行时版本开箱即用，**不需要**再装 GMT / Ghostscript / Git；轻量版与源码运行仍需本机具备 GMT 环境。
+内置运行时版本开箱即用，**不需要**再装 GMT / Ghostscript / Git；轻量版与源码运行仍需本机具备 GMT 环境。各资产的 SHA-256 见同一 Release 的 `SHA256SUMS.txt`。
+
+### 换一台电脑跑示例（三步）
+
+1. 复制 `GMT-VectorLab-Example-<版本>.zip` 到目标电脑（U 盘 / 网盘均可，约 480 MB）。
+2. 解压到任意目录 —— **路径含中文也可以**，程序会自动映射到 ASCII 目录联接供 GMT 读取。
+3. 双击 `启动示例.bat`（等价于双击 `GMT-VectorLab.exe`，示例脚本与数据就在同一目录）。
+
+首次运行若被 Windows SmartScreen 拦截，点「更多信息 → 仍要运行」；若提示缺少 WebView2，安装一次 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) 即可（Windows 11 与多数 Windows 10 已自带）。
 
 ### 方式二：从源码运行
 
@@ -96,9 +116,11 @@ python gmt_editor.py verify  --script examples/plot.sh                     # 源
 
 ---
 
-## 从源码打包成单文件程序
+## 从源码打包
 
-**直接运行版（便携 exe）：**
+以下步骤都在仓库根目录执行（Windows）。
+
+### 1. 轻量版单文件程序
 
 ```bash
 pip install -r requirements.txt
@@ -106,30 +128,54 @@ pip install pyinstaller
 pyinstaller GMT-VectorLab.spec
 ```
 
-产物在 `dist/GMT-VectorLab`（Windows 为 `.exe`）。`GMT-VectorLab.spec` 已配好图标、版本信息与资源内联（ui.html / fieldkit.js / canvaskit.js 会被打包进单文件）。
+产物为 `dist/GMT-VectorLab.exe`。`GMT-VectorLab.spec` 已配好图标、版本信息与资源内联（ui.html / fieldkit.js / canvaskit.js 会被打包进单文件）。此版本**不含**运行时，要求本机已装 GMT 6 + Ghostscript。
 
-**可安装版（Setup exe，内置运行时）：**
-
-```bash
-# 1) 先按上一步产出轻量版 GMT-VectorLab.exe
-# 2) 把它复制到 packaging/ 目录
-cp dist/GMT-VectorLab/GMT-VectorLab.exe packaging/
-# 3) 把内置运行时打包成 packaging/runtime.zip（zip 根目录直接是 gmt/ 与 bash/）
-#    内置运行时目录结构: runtime/gmt/... + runtime/bash/...
-# 4) 打包安装器 (内嵌 exe 与 runtime.zip, 安装时解压 + 建快捷方式 + 卸载脚本)
-pyinstaller packaging/GMT-VectorLab-Setup.spec
-```
-
-**内置运行时便携版：**
+### 2. 组装内置运行时
 
 ```bash
-# 把 dist/GMT-VectorLab/GMT-VectorLab.exe 与 runtime/ 放进同一目录, 整体压缩分发
-#   GMT-VectorLab/
-#   ├─ GMT-VectorLab.exe
-#   └─ runtime/{gmt,bash}
+python packaging/build_runtime.py
 ```
 
-安装器默认安装到 `%LOCALAPPDATA%\Programs\GMT-VectorLab`，无需管理员权限。
+脚本只用标准库，自动从官方 Release 下载、解压并组装：
+
+| 组件 | 来源 | 组装位置 |
+| --- | --- | --- |
+| GMT 6.7.0 win64（含 Ghostscript / GDAL / PROJ / FFmpeg） | [GenericMappingTools/gmt](https://github.com/GenericMappingTools/gmt/releases/tag/6.7.0) | `runtime/gmt` |
+| MinGit 2.56.0.4（提供 bash） | [git-for-windows/git](https://github.com/git-for-windows/git/releases/tag/v2.56.0.windows.4) | `runtime/bash` |
+
+完成后会做完整性校验，并生成 `packaging/runtime.zip`（zip 内直接是 `gmt/` 与 `bash/`，不含外层 `runtime/`）。
+
+| 参数 | 作用 |
+| --- | --- |
+| `--gmt-zip` / `--mingit-zip` | 使用已下载的本地官方包，跳过下载 |
+| `--no-zip` | 只组装 `runtime/`，不生成 `runtime.zip` |
+| `--force` | 忽略缓存，重新下载解压 |
+| `--runtime` / `--zip` | 自定义运行时目录 / 压缩包路径 |
+
+### 3. 内置运行时便携版
+
+```bash
+dist/GMT-VectorLab-Portable/
+├─ GMT-VectorLab.exe     # 第 1 步产物
+└─ runtime/              # 第 2 步产物
+   ├─ gmt/
+   └─ bash/
+```
+
+程序启动时优先使用同目录（或上级目录）的 `runtime/`，找不到才回落到系统 GMT；整个目录压缩即可分发。
+
+### 4. 安装版 Setup
+
+```bash
+# 1) 先产出 dist/GMT-VectorLab.exe（第 1 步）
+copy dist\GMT-VectorLab.exe packaging\
+# 2) 生成 packaging\runtime.zip（第 2 步默认输出到这里）
+python packaging\build_runtime.py
+# 3) 打包安装器：内嵌 exe 与 runtime.zip，安装时解压 + 建快捷方式 + 写卸载项
+pyinstaller packaging\GMT-VectorLab-Setup.spec
+```
+
+安装器默认安装到 `%LOCALAPPDATA%\Programs\GMT-VectorLab`（无需管理员权限）；用户名含中文时自动改到 `C:\Users\Public\GMT-VectorLab`，避开 GMT 的窄字符路径问题。
 
 内置运行时的第三方组件与许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
@@ -147,8 +193,11 @@ GMT-VectorLab/
 ├─ ui.html             前端界面（画布模式 / 命令模式）
 ├─ canvaskit.js        画布交互：拖拽、缩放、旋转、多选、文字编辑
 ├─ fieldkit.js         GMT 选项 → 表单控件的解析规则
-├─ GMT-VectorLab.spec   PyInstaller 配置（直接运行版）
-├─ packaging/           可安装版（Setup.exe）的构建源码与 spec
+├─ GMT-VectorLab.spec   PyInstaller 配置（轻量版单文件程序）
+├─ packaging/           安装版与内置运行时的构建
+│  ├─ build_runtime.py   下载官方 GMT / MinGit，组装 runtime/ 并生成 runtime.zip
+│  ├─ installer.py       安装器：解压运行时、建快捷方式与卸载项
+│  └─ GMT-VectorLab-Setup.spec
 ├─ THIRD_PARTY_NOTICES.md  内置运行时的第三方组件与许可证
 ├─ icon.ico            程序图标
 ├─ version_info.txt    Windows 版本信息资源
