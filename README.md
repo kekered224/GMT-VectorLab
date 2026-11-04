@@ -70,7 +70,7 @@ GMT VectorLab 在这一点上补了一层可视化编辑：
 
 ### 换一台电脑跑示例（三步）
 
-1. 复制 `GMT-VectorLab-Example-<版本>.zip` 到目标电脑（U 盘 / 网盘均可，约 480 MB）。
+1. 复制 `GMT-VectorLab-Example-<版本>.zip` 到目标电脑（U 盘 / 网盘均可，约 270 MB，解压后约 480 MB）。
 2. 解压到任意目录 —— **路径含中文也可以**，程序会自动映射到 ASCII 目录联接供 GMT 读取。
 3. 双击 `启动示例.bat`（等价于双击 `GMT-VectorLab.exe`，示例脚本与数据就在同一目录）。
 
