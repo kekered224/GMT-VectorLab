@@ -74,6 +74,138 @@ def set_attr(tag, name, val):
     return tag[:-1] + f' {name}="{val}"' + ">"
 
 
+SHAPE_DEF = {
+    "point": ("#e4572e", "#e4572e", 0),
+    "line": ("none", "#1f6feb", 1.6),
+    "poly": ("#cfe3f7", "#1f6feb", 1.4),
+    "rect": ("#cfe3f7", "#1f6feb", 1.4),
+    "roundrect": ("#cfe3f7", "#1f6feb", 1.4),
+    "ellipse": ("#cfe3f7", "#1f6feb", 1.4),
+    "triangle": ("#cfe3f7", "#1f6feb", 1.4),
+    "diamond": ("#cfe3f7", "#1f6feb", 1.4),
+    "pentagon": ("#cfe3f7", "#1f6feb", 1.4),
+    "hexagon": ("#cfe3f7", "#1f6feb", 1.4),
+    "star": ("#fbd9a3", "#c27c0e", 1.4),
+    "arrow": ("#cfe3f7", "#1f6feb", 1.4),
+    "doublearrow": ("#cfe3f7", "#1f6feb", 1.4),
+    "parallelogram": ("#cfe3f7", "#1f6feb", 1.4),
+}
+BOX_SHAPES = {"rect", "roundrect", "ellipse", "triangle", "diamond",
+              "pentagon", "hexagon", "star", "arrow", "doublearrow", "parallelogram"}
+
+
+def _circle_d(cx, cy, r):
+    return _ellipse_d(cx, cy, r, r)
+
+
+def _ellipse_d(cx, cy, rx, ry):
+    kx, ky = rx * 0.5523, ry * 0.5523
+    return (f"M{cx-rx:.2f} {cy:.2f}C{cx-rx:.2f} {cy-ky:.2f} {cx-kx:.2f} {cy-ry:.2f} {cx:.2f} {cy-ry:.2f}"
+            f"C{cx+kx:.2f} {cy-ry:.2f} {cx+rx:.2f} {cy-ky:.2f} {cx+rx:.2f} {cy:.2f}"
+            f"C{cx+rx:.2f} {cy+ky:.2f} {cx+kx:.2f} {cy+ry:.2f} {cx:.2f} {cy+ry:.2f}"
+            f"C{cx-kx:.2f} {cy+ry:.2f} {cx-rx:.2f} {cy+ky:.2f} {cx-rx:.2f} {cy:.2f}Z")
+
+
+def _path_d(pts, close=False):
+    d = "M%.2f %.2f" % pts[0]
+    for x, y in pts[1:]:
+        d += "L%.2f %.2f" % (x, y)
+    return d + ("Z" if close else "")
+
+
+def _ring(n, cx, cy, rx, ry, inner=1.0, start_deg=-90):
+    import math
+    st = math.radians(start_deg)
+    out = []
+    for i in range(n * 2):
+        a = st + i * math.pi / n
+        k = inner if (inner and i % 2) else 1.0
+        out.append((cx + math.cos(a) * rx * k, cy + math.sin(a) * ry * k))
+    return out
+
+
+def _box_d(kind, x0, y0, x1, y1):
+    w, h = x1 - x0, y1 - y0
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    if kind == "rect":
+        return _path_d([(x0, y0), (x1, y0), (x1, y1), (x0, y1)], True)
+    if kind == "ellipse":
+        return _ellipse_d(cx, cy, abs(w) / 2, abs(h) / 2)
+    if kind == "roundrect":
+        r = min(abs(w), abs(h)) * 0.22
+        return (f"M{x0+r:.2f} {y0:.2f}L{x1-r:.2f} {y0:.2f}Q{x1:.2f} {y0:.2f} {x1:.2f} {y0+r:.2f}"
+                f"L{x1:.2f} {y1-r:.2f}Q{x1:.2f} {y1:.2f} {x1-r:.2f} {y1:.2f}"
+                f"L{x0+r:.2f} {y1:.2f}Q{x0:.2f} {y1:.2f} {x0:.2f} {y1-r:.2f}"
+                f"L{x0:.2f} {y0+r:.2f}Q{x0:.2f} {y0:.2f} {x0+r:.2f} {y0:.2f}Z")
+    if kind == "triangle":
+        return _path_d([(cx, y0), (x1, y1), (x0, y1)], True)
+    if kind == "diamond":
+        return _path_d([(cx, y0), (x1, cy), (cx, y1), (x0, cy)], True)
+    if kind == "pentagon":
+        return _path_d(_ring(5, cx, cy, abs(w) / 2, abs(h) / 2), True)
+    if kind == "hexagon":
+        return _path_d(_ring(6, cx, cy, abs(w) / 2, abs(h) / 2), True)
+    if kind == "star":
+        return _path_d(_ring(5, cx, cy, abs(w) / 2, abs(h) / 2, 0.38), True)
+    if kind == "parallelogram":
+        o = abs(w) * 0.22
+        return _path_d([(x0 + o, y0), (x1, y0), (x1 - o, y1), (x0, y1)], True)
+    if kind in ("arrow", "doublearrow"):
+        sh, hw = abs(h) * 0.22, abs(w) * 0.36
+        if kind == "arrow":
+            return _path_d([(x0, cy - sh), (x1 - hw, cy - sh), (x1 - hw, y0), (x1, cy),
+                            (x1 - hw, y1), (x1 - hw, cy + sh), (x0, cy + sh)], True)
+        return _path_d([(x0, cy), (x0 + hw, y0), (x0 + hw, cy - sh), (x1 - hw, cy - sh),
+                        (x1 - hw, y0), (x1, cy), (x1 - hw, y1), (x1 - hw, cy + sh),
+                        (x0 + hw, cy + sh), (x0 + hw, y1)], True)
+    return _path_d([(x0, y0), (x1, y0), (x1, y1), (x0, y1)], True)
+
+
+def shape_d(e):
+    """编辑器里新增的点/线/预设形状 -> SVG path d (坐标与 PDF 点一致)。"""
+    pts = [(float(p[0]), float(p[1])) for p in (e.get("_pts") or []) if len(p) >= 2]
+    kind = e.get("_shape") or "line"
+    if not pts:
+        return ""
+    if kind == "point" or len(pts) == 1:
+        return _circle_d(pts[0][0], pts[0][1], float(e.get("_r") or 3.5))
+    if kind in BOX_SHAPES:
+        x0, x1 = sorted((pts[0][0], pts[1][0]))
+        y0, y1 = sorted((pts[0][1], pts[1][1]))
+        if x1 - x0 < 1 or y1 - y0 < 1:
+            x1, y1 = x0 + 60, y0 + 40
+        return _box_d(kind, x0, y0, x1, y1)
+    return _path_d(pts, kind == "poly")
+
+
+def shape_bbox(e):
+    pts = [(float(p[0]), float(p[1])) for p in (e.get("_pts") or []) if len(p) >= 2]
+    if not pts:
+        return None
+    kind = e.get("_shape") or "line"
+    r = float(e.get("_r") or 3.5) if kind == "point" else 0.0
+    if kind == "point" or len(pts) == 1:
+        x, y = pts[0]
+        return x - r, y - r, x + r, y + r
+    xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
+    pad = 1.2
+    return min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad
+
+
+def new_shape_line(gid, e):
+    """把一条 _shape 记录变成 <g class="vec"><path/></g> 的一行, 并套用样式/变换。"""
+    d = shape_d(e)
+    bb = shape_bbox(e)
+    if not d or bb is None:
+        return None
+    kind = e.get("_shape") or "line"
+    fill, stroke, w = SHAPE_DEF.get(kind, SHAPE_DEF["line"])
+    line = ('<g class="vec" id="%s" data-bbox="%.2f %.2f %.2f %.2f">'
+            '<path d="%s" fill="%s" stroke="%s" stroke-width="%s"/></g>'
+            % (html.escape(gid, quote=True), bb[0], bb[1], bb[2], bb[3], d, fill, stroke, w))
+    return apply_one(line, e, "vec")
+
+
 def tf(e, cx, cy):
     dx, dy = e.get("dx", 0), e.get("dy", 0)
     if "scale" in e and "sx" not in e:
@@ -135,7 +267,47 @@ def apply_one(line, e, cls):
 def apply_edits(svg_text, edits):
     lines, els = parse_elements(svg_text)
     report = []
+    inserts = []
     for gid, e in edits.items():
+        # 编辑器里新增的点/线/面: 原图里不存在, 直接插到 </svg> 前 (最上层);
+        # 同一 id 已存在 (对已烘焙的 SVG 再套一次) 则退回普通改属性。
+        if e.get("_shape") and e.get("_pts"):
+            if gid in els:
+                info = els[gid]
+                lines[info["line"]] = apply_one(lines[info["line"]], e, info["cls"])
+                report.append((gid, "-> " + gid, "形状刷新"))
+            else:
+                nid, k = gid, 2
+                while nid in els or any(nid == it[0] for it in inserts):
+                    nid, k = "%s_%d" % (gid, k), k + 1
+                nl = new_shape_line(nid, e)
+                if nl is None:
+                    report.append((gid, "MISS", "形状为空"))
+                else:
+                    inserts.append((nid, nl))
+                    report.append((gid, "insert " + nid,
+                                   "%s %d 点" % (e.get("_shape"), len(e.get("_pts")))))
+            continue
+        # 画布上复制出来的原 GMT 元素: 原图里没有这个 id, 用编辑器存下的克隆几何插入一份。
+        if e.get("_clone"):
+            if gid in els:
+                info = els[gid]
+                lines[info["line"]] = apply_one(lines[info["line"]], e, info["cls"])
+                report.append((gid, "-> " + gid, "副本刷新"))
+            else:
+                nid, k = gid, 2
+                while nid in els or any(nid == it[0] for it in inserts):
+                    nid, k = "%s_%d" % (gid, k), k + 1
+                raw = re.sub(r'\bid="[^"]*"', lambda _m: 'id="%s"' % nid, e["_clone"], count=1)
+                cls = "txt" if 'class="txt"' in raw else "vec"
+                try:
+                    nl = apply_one(raw, e, cls)
+                except Exception as ex:
+                    report.append((gid, "MISS", "副本无效: %s" % ex))
+                else:
+                    inserts.append((nid, nl))
+                    report.append((gid, "insert " + nid, "复制" + ("文字" if cls == "txt" else "矢量")))
+            continue
         tgt = match_target(gid, e, lines, els)
         if tgt is None:
             report.append((gid, "MISS", e.get("_content") or e.get("_bbox") or ""))
@@ -160,6 +332,9 @@ def apply_edits(svg_text, edits):
         if e.get("hidden"):
             bits.append("HIDDEN")
         report.append((gid, "-> " + tgt, " ".join(bits)))
+    if inserts:
+        idx = next((i for i in range(len(lines) - 1, -1, -1) if "</svg>" in lines[i]), len(lines))
+        lines[idx:idx] = [ln for _nid, ln in inserts]
     return "\n".join(lines), report
 
 

@@ -19,7 +19,7 @@ gmt_editor.py —— GMT VectorLab 命令行工具与渲染引擎
 设计约束: 只用标准库; GMT 选项按"值粘连在 flag 后"的 shell 惯例解析
          (如 -W0.5p,black / -JM12c / -BWSen+t"...")。
 """
-import sys, os, re, json, shutil, hashlib, subprocess, argparse, tempfile
+import sys, os, re, json, shutil, hashlib, subprocess, argparse, tempfile, threading
 
 # ---------------------------------------------------------------------------
 # 分词: 类 shell 切分, 尊重成对引号 (双/单), 并把引号原样保留在 token 里,
@@ -103,6 +103,7 @@ def parse_script(path):
     src = open(path, "r", encoding="utf-8-sig").read()
     lines = src.splitlines()
     begin, end, ops, raw, idx = None, None, [], [], 0
+    sessions, cur = [], None
     i = 0
     while i < len(lines):
         line = lines[i]
@@ -112,9 +113,22 @@ def parse_script(path):
         if not toks:
             continue
         if toks[0] == "gmt" and len(toks) > 1 and toks[1] == "begin":
-            begin = {"tokens": toks, "line": lineno}; continue
+            # 一个脚本可以有多个 gmt begin/end 会话 (多张图), 逐段记录,
+            # 否则不同图层的改动会串到同一张图上。
+            sess = {"begin": {"tokens": toks, "line": lineno}, "end": None,
+                    "ops": [], "raw": []}
+            sessions.append(sess)
+            cur = sess
+            if begin is None:
+                begin = sess["begin"]
+            continue
         if toks[0] == "gmt" and len(toks) > 1 and toks[1] == "end":
-            end = {"tokens": toks, "line": lineno}; continue
+            rec = {"tokens": toks, "line": lineno}
+            if cur is not None and cur["end"] is None:
+                cur["end"] = rec
+                cur = None
+            end = rec
+            continue
         if toks[0] == "gmt" and len(toks) > 1:
             # here-document: 数据行既不是 gmt 命令也不是注释, 逐行收进来,
             # 否则重渲染时整块数据丢失 -> bash 报 "here-document delimited by EOF"
@@ -127,15 +141,21 @@ def parse_script(path):
                     i += 1
                     if done:
                         break
-            ops.append(DrawOp(idx, toks[1], toks, lineno, hd)); idx += 1
+            op = DrawOp(idx, toks[1], toks, lineno, hd)
+            ops.append(op); idx += 1
+            if cur is not None:
+                cur["ops"].append(op)
             continue
         # 非 gmt 行: 数据准备/清理命令要保留, 否则中间文件 (box.txt 等) 缺失
         if toks[0] in _SHELL_KEEP:
-            raw.append({"line": lineno, "text": line.rstrip()})
+            r = {"line": lineno, "text": line.rstrip()}
+            raw.append(r)
+            if cur is not None:
+                cur["raw"].append(r)
     if begin is None or end is None:
         raise ValueError("未找到 gmt begin / gmt end (需现代模式脚本)")
     return {"path": path, "begin": begin, "end": end, "ops": ops,
-            "raw": raw, "lines": lines}
+            "raw": raw, "lines": lines, "sessions": sessions}
 
 
 
@@ -187,7 +207,8 @@ def apply_overlay(ir, overlay):
             changed.append((op.index, op.module, "(append)", None, a))
         new_ops.append(DrawOp(op.index, op.module, out, op.lineno, list(op.heredoc)))
     return {"begin": ir["begin"], "end": ir["end"], "ops": new_ops,
-            "raw": ir.get("raw", []), "lines": ir["lines"], "path": ir["path"]}, changed
+            "raw": ir.get("raw", []), "lines": ir["lines"], "path": ir["path"],
+            "sessions": ir.get("sessions") or []}, changed
 
 # ---------------------------------------------------------------------------
 # 渲染器: IR -> 现代模式 bash 脚本 (忠实 re-emit, 引号原样保留)
@@ -220,7 +241,17 @@ def _ensure_pdf(begin_tokens):
 
 def emit_script(ir):
     # 按源文件行号把 begin / 各图层 / 保留的 shell 行 / end 依次还原
-    entries = [(ir["begin"]["line"], "begin", None), (ir["end"]["line"], "end", None)]
+    entries = []
+    sessions = ir.get("sessions") or []
+    if sessions:
+        # 多会话脚本: 每个 gmt begin/end 都按原位置还原
+        for s in sessions:
+            entries.append((s["begin"]["line"], "begin", s["begin"]["tokens"]))
+            if s.get("end"):
+                entries.append((s["end"]["line"], "end", s["end"]["tokens"]))
+    else:
+        entries.append((ir["begin"]["line"], "begin", ir["begin"]["tokens"]))
+        entries.append((ir["end"]["line"], "end", ir["end"]["tokens"]))
     for op in ir["ops"]:
         entries.append((op.lineno, "op", op))
     for r in ir.get("raw", []):
@@ -231,9 +262,9 @@ def emit_script(ir):
              "# 由 gmt_editor.py 自动生成 —— 请勿手改。改动来自 overlay.json。"]
     for _ln, kind, obj in entries:
         if kind == "begin":
-            parts.append(" ".join(_ensure_pdf(ir["begin"]["tokens"])))
+            parts.append(" ".join(_ensure_pdf(obj)))
         elif kind == "end":
-            parts.append(" ".join(ir["end"]["tokens"]))
+            parts.append(" ".join(obj))
         elif kind == "raw":
             parts.append(obj)
         else:
@@ -676,6 +707,126 @@ def _hidden_console_kwargs():
     return kw
 
 
+_JOB = {"h": None, "k32": None, "tried": False}
+
+
+def _job_handle():
+    """所有渲染子进程都放进同一个 Windows Job Object。
+    结束整个 job 才能连带杀掉 gmt / ghostscript 这些孙进程 —— taskkill /T 对
+    msys 的 fork 子进程并不可靠 (实测 sleep.exe 会漏网, 继续握着管道让界面卡死)。"""
+    if os.name != "nt":
+        return None
+    if _JOB["h"] or _JOB["tried"]:
+        return _JOB["h"]
+    _JOB["tried"] = True
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateJobObjectW.restype = wintypes.HANDLE
+        k32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+        k32.AssignProcessToJobObject.restype = wintypes.BOOL
+        k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        k32.TerminateJobObject.restype = wintypes.BOOL
+        k32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        h = k32.CreateJobObjectW(None, None)
+        _JOB["k32"], _JOB["h"] = k32, (h or None)
+    except Exception:
+        _JOB["h"] = None
+    return _JOB["h"]
+
+
+def _job_add(proc):
+    h = _job_handle()
+    if not h:
+        return
+    try:
+        _JOB["k32"].AssignProcessToJobObject(h, proc._handle)
+    except Exception:
+        pass
+
+
+def _job_kill():
+    h = _JOB["h"]
+    if h:
+        try:
+            _JOB["k32"].TerminateJobObject(h, 1)
+        except Exception:
+            pass
+
+
+def _kill_tree(pid):
+    """结束整棵进程树。只 kill bash 的话, 它启动的 gmt.exe / ghostscript 还活着,
+    stdout/stderr 管道就一直是打开的 —— communicate() 会继续阻塞到子进程自己退出,
+    界面于是永久停在「载入中」。"""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                           capture_output=True, **_hidden_console_kwargs())
+        else:
+            os.kill(pid, 9)
+    except Exception:
+        pass
+
+
+# 大图 / 大数据量的脚本跑十几分钟很正常, 所以硬上限给足; 到点前由界面先问用户
+# "已经用了 N 秒, 要继续等吗", 用户点取消时走 cancel_current() 立刻结束进程树。
+RENDER_TIMEOUT = 1800          # 30 分钟硬上限
+_ACTIVE_PROCS = {}
+_ACTIVE_LOCK = threading.Lock()
+_CANCEL_STATE = {"flag": False}
+
+
+def cancel_current():
+    """前端点「取消渲染」时调用: 结束当前正在跑的整棵进程树。"""
+    with _ACTIVE_LOCK:
+        _CANCEL_STATE["flag"] = True
+        procs = list(_ACTIVE_PROCS.values())
+    _job_kill()
+    for p in procs:
+        _kill_tree(p.pid)
+    return bool(procs)
+
+
+def _run_capture(cmd, cwd, env, timeout):
+    """带超时的子进程执行: 超时先杀整棵进程树, 再收尾读管道。
+    返回 (rc, stdout, stderr); 超时 rc=-3, 用户取消 rc=-4, 启动失败 rc=-1。"""
+    with _ACTIVE_LOCK:
+        _CANCEL_STATE["flag"] = False
+    try:
+        proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                                errors="replace", env=env, **_hidden_console_kwargs())
+    except Exception as e:
+        return -1, "", "启动 %s 失败: %s" % (os.path.basename(cmd[0]), e)
+    _job_add(proc)
+    with _ACTIVE_LOCK:
+        _ACTIVE_PROCS[proc.pid] = proc
+    rc = -1
+    so, se = "", ""
+    try:
+        so, se = proc.communicate(timeout=timeout)
+        rc = proc.returncode
+    except subprocess.TimeoutExpired:
+        _job_kill()
+        _kill_tree(proc.pid)
+        try:
+            so, se = proc.communicate(timeout=2)   # 收尾读管道, 再慢也不等它
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            so, se = "", ""
+        rc = -3
+    finally:
+        with _ACTIVE_LOCK:
+            _ACTIVE_PROCS.pop(proc.pid, None)
+    if _CANCEL_STATE["flag"]:
+        return -4, so or "", "已取消渲染"
+    return rc, so or "", se or ""
+
+
 def _to_msys_path(p):
     """c:\\programs\\gmt6\\bin -> /c/programs/gmt6/bin (Git Bash/MSYS 形式)。"""
     if not p:
@@ -793,7 +944,7 @@ def _snap_files(roots, exts, depth=3):
     return snap
 
 
-def render_direct(workdir, script_path, timeout=300):
+def render_direct(workdir, script_path, timeout=RENDER_TIMEOUT):
     """原脚本直跑: 补 pdf -> 改写数据引用 -> bash 跑整份脚本 -> 认新出的 pdf/png。
     返回字段与 render_and_run 对齐, 另加 pdf / png / pdfs。"""
     sp = os.path.abspath(script_path)
@@ -825,17 +976,10 @@ def render_direct(workdir, script_path, timeout=300):
     before = _snap_files(roots, (".pdf", ".png"))
     env = _gmt_env()
     env["GMT_SESSION_NAME"] = "gmt_vectorlab_%d" % os.getpid()
-    rc, so, se = -1, "", ""
-    try:
-        proc = subprocess.run([shell, rendered], cwd=sdir, capture_output=True,
-                              text=True, encoding="utf-8", errors="replace",
-                              env=env, timeout=timeout, **_hidden_console_kwargs())
-        rc, so, se = proc.returncode, proc.stdout or "", proc.stderr or ""
-    except subprocess.TimeoutExpired as e:
-        rc = -3
-        se = "渲染超时 (%d 秒), 脚本可能在等待输入或数据量过大。" % timeout
-    except Exception as e:
-        rc, se = -1, "启动 %s 失败: %s" % (os.path.basename(shell), e)
+    rc, so, se = _run_capture([shell, rendered], sdir, env, timeout)
+    if rc == -3:
+        se = (se + "\n" if se else "") + \
+             "渲染超时 (%d 秒), 脚本可能在等待输入或数据量过大。" % timeout
 
     after = _snap_files(roots, (".pdf", ".png"))
     fresh = [p for p, v in after.items() if before.get(p) != v]
@@ -850,7 +994,8 @@ def render_direct(workdir, script_path, timeout=300):
     # 产物优先级: 这次新出且不在临时目录 -> 这次新出 -> 已有的。脚本常把图先渲到
     # work/.tmp 再拷到 out/, 临时目录里的那份也是完整产物, 但不能优先于正式输出。
     fresh_keep = [p for p in fresh if not _is_tmp(p)]
-    pdfs = _newest([p for p in fresh_keep if p.lower().endswith(".pdf")])
+    fresh_pdfs = _newest([p for p in fresh_keep if p.lower().endswith(".pdf")])
+    pdfs = list(fresh_pdfs)
     if not pdfs:
         pdfs = _newest([p for p in fresh if p.lower().endswith(".pdf")])
     if not pdfs:   # 脚本这次没重画 (if [ ! -f ] 缓存命中), 退回已有 pdf
@@ -872,16 +1017,20 @@ def render_direct(workdir, script_path, timeout=300):
     miss.update(re.findall(r"Cannot find file\s+(\S+)", err_txt))
     after_hash = sha256(sp)
     return {"rendered": rendered, "stdout": so, "stderr": se, "rc": rc, "changed": [],
-            "missing": sorted(miss), "pdf": pdf, "png": png, "pdfs": pdfs,
+            "missing": sorted(miss), "pdf": pdf, "png": png,
+            "pdfs": pdfs, "fresh_pdfs": fresh_pdfs,
             "orig_sha256": orig_hash, "script_untouched": orig_hash == after_hash}
 
 
-def render_and_run(workdir, script_path, overlay_path, out_name="figure"):
+def render_and_run(workdir, script_path, overlay_path, out_name="figure", timeout=RENDER_TIMEOUT):
     orig_hash = sha256(script_path)
     ir = parse_script(script_path)
     overlay = json.load(open(overlay_path, "r", encoding="utf-8")) if overlay_path and os.path.exists(overlay_path) else {"ops": []}
     edir, changed = apply_overlay(ir, overlay)
-    # 自动化渲染: 去掉 'gmt end show' 的 show, 避免唤起查看器阻塞
+    # 自动化渲染: 去掉所有 'gmt end show' 的 show, 避免唤起查看器阻塞
+    for s in edir.get("sessions") or []:
+        if s.get("end"):
+            s["end"]["tokens"] = [t for t in s["end"]["tokens"] if t.lower() != "show"]
     edir["end"]["tokens"] = [t for t in edir["end"]["tokens"] if t.lower() != "show"]
     text = emit_script(edir)
     text, missing = _resolve_data_paths(text, workdir)
@@ -897,26 +1046,53 @@ def render_and_run(workdir, script_path, overlay_path, out_name="figure"):
                            "\n请安装 Git for Windows (含 Git Bash) 并确保 gmt 在 PATH 上。"),
                 "orig_sha256": orig_hash, "script_untouched": orig_hash == sha256(script_path)}
     # 真渲染: 交给定位到的 shell 跑 GMT 现代模式 (隐藏控制台, 避免 windowed exe 弹命令行框)
-    proc = subprocess.run([shell, rendered], cwd=workdir,
-                          capture_output=True, text=True, env=_gmt_env(),
-                          **_hidden_console_kwargs())
+    roots = _scan_roots(workdir)
+    before = _snap_files(roots, (".pdf",))
+    rc, so, se = _run_capture([shell, rendered], workdir, _gmt_env(), timeout)
+    if rc == -3:
+        se = (se + "\n" if se else "") + \
+             "渲染超时 (%d 秒), 脚本可能在等待输入或数据量过大。" % timeout
+    after = _snap_files(roots, (".pdf",))
     # 关键安全断言: 源脚本没被动过
     after_hash = sha256(script_path)
     assert orig_hash == after_hash, "源脚本被改动了! (不应发生)"
     # 找不到的数据 + GMT 自己报的 Cannot find file, 合并成一份缺失清单。
     # 这类错误不会让 rc 变非零: GMT 只跳过那一条模块, 图照出但少了那一层。
-    err_txt = (proc.stderr or "") + "\n" + (proc.stdout or "")
+    err_txt = se + "\n" + so
     miss = set(missing)
     miss.update(re.findall(r"Cannot find file\s+(\S+)", err_txt))
     toks = ir["begin"]["tokens"]
     nm = toks[2] if len(toks) >= 3 and not toks[2].startswith(("$", '"$', "'$")) else out_name
-    pdf = os.path.join(workdir, nm + ".pdf")
-    png = os.path.join(workdir, nm + ".png")
-    return {"rendered": rendered, "stdout": proc.stdout or "", "stderr": proc.stderr or "",
-            "rc": proc.returncode, "changed": changed, "missing": sorted(miss),
-            "pdf": pdf if os.path.exists(pdf) else None,
-            "png": png if os.path.exists(png) else None,
-            "pdfs": [pdf] if os.path.exists(pdf) else [],
+
+    def _is_tmp(p):
+        low = p.lower().replace("\\", "/")
+        return "/.tmp/" in low or "/tmp/" in low or "/sessions/" in low
+
+    def _newest(lst):
+        return sorted(lst, key=lambda p: os.path.getmtime(p), reverse=True)
+
+    # 多图脚本: 所有会话的产物都要认, 不能只取第一个 gmt begin 的名字
+    fresh_pdfs = _newest([p for p, v in after.items()
+                          if before.get(p) != v and not _is_tmp(p)])
+    if not fresh_pdfs:
+        named = []
+        for s in ir.get("sessions") or []:
+            t = s["begin"]["tokens"]
+            if len(t) >= 3 and not t[2].startswith(("$", '"$', "'$")):
+                named.append(os.path.join(workdir, t[2] + ".pdf"))
+        fresh_pdfs = _newest([p for p in named if os.path.exists(p)])
+    if not fresh_pdfs:
+        fresh_pdfs = _newest(list(after))
+    pdfs = list(fresh_pdfs)
+    pdf = pdfs[0] if pdfs else None
+    png = None
+    if pdf and os.path.exists(os.path.splitext(pdf)[0] + ".png"):
+        png = os.path.splitext(pdf)[0] + ".png"
+    elif os.path.exists(os.path.join(workdir, nm + ".png")):
+        png = os.path.join(workdir, nm + ".png")
+    return {"rendered": rendered, "stdout": so, "stderr": se,
+            "rc": rc, "changed": changed, "missing": sorted(miss),
+            "pdf": pdf, "png": png, "pdfs": pdfs, "fresh_pdfs": pdfs,
             "orig_sha256": orig_hash, "script_untouched": orig_hash == after_hash}
 
 # ---------------------------------------------------------------------------

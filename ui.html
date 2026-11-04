@@ -3,6 +3,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>GMT VectorLab</title>
+<script>
+/* 主题在首屏绘制前应用, 避免深色模式闪白 */
+(function(){
+  try{
+    var t = localStorage.getItem('gvl.theme') || 'system';
+    var dark = t === 'dark' || (t === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    document.documentElement.dataset.themePref = t;
+  }catch(e){}
+})();
+</script>
 <script src="fieldkit.js"></script>
 <script src="canvaskit.js"></script>
 <style>
@@ -20,6 +31,15 @@
   --font:-apple-system,"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI",system-ui,Roboto,sans-serif;
   --mono:"Cascadia Code","SFMono-Regular",Consolas,"Liberation Mono",monospace;
 }
+:root[data-theme="dark"]{
+  --bg:#14171c; --surface:#1b1f26; --surface-2:#232831; --surface-3:#2c323c;
+  --border:#2a3039; --border-2:#3a414d; --ink:#e7eaf0; --ink-2:#a9b2c0; --ink-3:#7d8797;
+  --accent:#7c8cff; --accent-h:#9aa8ff; --accent-soft:#242b47; --accent-ring:rgba(124,140,255,.32);
+  --ok:#3fbf6b; --ok-soft:#16291e; --warn:#e8a33d; --warn-soft:#2d2415; --err:#f26b6b; --err-soft:#2e1a1a;
+  --sh-1:0 1px 2px rgba(0,0,0,.35),0 1px 3px rgba(0,0,0,.3);
+  --sh-2:0 6px 18px rgba(0,0,0,.45),0 2px 5px rgba(0,0,0,.3);
+  --sh-3:0 16px 44px rgba(0,0,0,.55);
+}
 *{box-sizing:border-box}
 html,body{height:100%}
 body{margin:0;font:14px/1.55 var(--font);color:var(--ink);background:var(--bg);
@@ -27,14 +47,17 @@ body{margin:0;font:14px/1.55 var(--font);color:var(--ink);background:var(--bg);
 ::selection{background:var(--accent-soft)}
 button{font-family:inherit}
 input,select{font-family:inherit}
-::-webkit-scrollbar{width:11px;height:11px}
-::-webkit-scrollbar-thumb{background:#cdd3db;border:3px solid transparent;border-radius:99px;background-clip:content-box}
-::-webkit-scrollbar-thumb:hover{background:#b6bdc7;background-clip:content-box}
+/* 细滚动条 (vs code 风格): 8px 轨道透明, 4px 滑块 */
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border-2);border:2px solid transparent;border-radius:99px;background-clip:content-box}
+::-webkit-scrollbar-thumb:hover{background:var(--ink-3);background-clip:content-box}
+::-webkit-scrollbar-corner{background:transparent}
 
 /* ============================ 应用外壳 ============================ */
-#app{display:grid;grid-template-rows:56px 1fr;height:100vh}
-.topbar{display:flex;align-items:center;gap:12px;padding:0 16px;background:var(--surface);
-  border-bottom:1px solid var(--border);z-index:20}
+#app{display:grid;grid-template-rows:auto minmax(0,1fr);height:100vh;width:100%;max-width:100vw}
+.topbar{display:flex;align-items:center;flex-wrap:wrap;gap:8px 10px;padding:8px 16px;min-height:56px;
+  background:var(--surface);border-bottom:1px solid var(--border);z-index:20}
 .brand{display:flex;align-items:center;gap:10px;font-weight:650;letter-spacing:-.2px}
 .logo{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,var(--accent),#7c6cf5);
   display:grid;place-items:center;color:#fff;box-shadow:var(--sh-1)}
@@ -48,7 +71,32 @@ input,select{font-family:inherit}
 .pill.ok{background:var(--ok-soft);color:#0f7a38;border-color:#c9ecd5}
 .pill.bad{background:var(--err-soft);color:#b91c1c;border-color:#f4cfcf}
 .pill.accent{background:var(--accent-soft);color:var(--accent-h);border-color:#dcd9fb}
+:root[data-theme="dark"] .pill.ok{color:#7ce3a2;border-color:#245c39}
+:root[data-theme="dark"] .pill.bad{color:#ff9d9d;border-color:#5d2a2a}
+:root[data-theme="dark"] .pill.accent{color:#b3bdff;border-color:#333c6b}
+:root[data-theme="dark"] .btn:hover{border-color:#4a5361}
 .spacer{flex:1}
+
+/* 主题切换 */
+.theme-wrap{position:relative;display:flex}
+.theme-menu{position:absolute;right:0;top:40px;z-index:90;min-width:148px;padding:5px;display:none;
+  background:var(--surface);border:1px solid var(--border-2);border-radius:10px;box-shadow:var(--sh-3)}
+.theme-menu.open{display:block}
+.theme-menu button{display:flex;align-items:center;gap:8px;width:100%;padding:7px 9px;border:none;border-radius:7px;
+  background:transparent;color:var(--ink);font-size:12.5px;cursor:pointer;text-align:left}
+.theme-menu button:hover{background:var(--surface-2)}
+.theme-menu button.on{background:var(--accent-soft);color:var(--accent-h);font-weight:600}
+.theme-menu svg{width:15px;height:15px;color:var(--ink-3)}
+.theme-menu button.on svg{color:var(--accent-h)}
+
+/* 可折叠分区 (画布左栏 / 命令行树) */
+.sect{display:flex;flex-direction:column;min-height:0;flex:none}
+.sect-h{cursor:pointer;user-select:none;display:flex;align-items:center;gap:6px}
+.sect-h .chev{width:12px;height:12px;flex:none;color:var(--ink-3);transition:transform .15s var(--ease)}
+.sect.closed .sect-h .chev{transform:rotate(-90deg)}
+.sect.closed .sect-b{display:none}
+.sect-h .cnt{margin-left:auto;font-size:10px;font-weight:600;letter-spacing:0;text-transform:none;
+  background:var(--surface-2);color:var(--ink-3);border-radius:99px;padding:1px 7px}
 
 /* 按钮 */
 .btn{display:inline-flex;align-items:center;gap:7px;height:36px;padding:0 14px;border-radius:var(--r-sm);
@@ -68,14 +116,27 @@ input,select{font-family:inherit}
 @keyframes sp{to{transform:rotate(360deg)}}
 
 /* ============================ 三栏 ============================ */
-.body{display:grid;grid-template-columns:264px 1fr 400px;min-height:0}
-.rail{background:var(--surface);overflow:auto;min-height:0}
+.body{display:grid;grid-template-columns:264px minmax(0,1fr) 400px;min-height:0}
+.rail{background:var(--surface);overflow:auto;min-height:0;min-width:0}
 .rail.left{border-right:1px solid var(--border)}
-.center{overflow:auto;min-height:0;background:var(--bg)}
+.center{overflow:auto;min-height:0;min-width:0;background:var(--bg)}
 .rail.right{border-left:1px solid var(--border);display:flex;flex-direction:column}
+/* 画布左栏: 图件分区 + 元素浏览器, 各自内部滚动 */
+.rail.left.cv-rail{display:flex;flex-direction:column;overflow:hidden}
+.cv-rail>.sess{flex:none}
+.cv-rail>#cvList{flex:1;min-height:0;display:flex;flex-direction:column}
 .pad{padding:16px}
 .sect-h{font-size:11px;font-weight:650;letter-spacing:.6px;text-transform:uppercase;color:var(--ink-3);
   padding:14px 16px 8px}
+@media (max-width:1180px){
+  .body{grid-template-columns:236px minmax(0,1fr) 340px}
+  .brand small{display:none}
+}
+@media (max-width:980px){
+  .body{grid-template-columns:210px minmax(0,1fr) 300px}
+  .topbar{gap:6px 8px}
+  .topbar .btn{padding:0 10px}
+}
 
 /* 图层树 */
 .sess{margin:12px;padding:11px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r);
@@ -96,11 +157,11 @@ input,select{font-family:inherit}
 .layer .dot{width:7px;height:7px;border-radius:50%;background:var(--warn);flex:none;box-shadow:0 0 0 3px var(--warn-soft)}
 
 /* 主区标题 */
-.chead{position:sticky;top:0;z-index:5;background:rgba(245,246,248,.85);backdrop-filter:blur(8px);
+.chead{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);
   border-bottom:1px solid var(--border);padding:16px 22px;display:flex;align-items:center;gap:12px}
 .chead h2{margin:0;font-size:17px;font-weight:650;letter-spacing:-.3px;display:flex;align-items:center;gap:10px;white-space:nowrap;flex:none}
 .chead .modbadge{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--accent-h);
-  background:var(--accent-soft);border:1px solid #dcd9fb;padding:2px 8px;border-radius:7px}
+  background:var(--accent-soft);border:1px solid var(--accent-ring);padding:2px 8px;border-radius:7px}
 .chead .line{font-size:12px;color:var(--ink-3);margin-left:auto}
 
 /* 参数卡 */
@@ -178,7 +239,7 @@ input[type=range]:disabled{opacity:.5}
 .preview img{max-width:100%;max-height:52vh;display:block;box-shadow:var(--sh-2)}
 .preview .ph{color:var(--ink-3);text-align:center;padding:40px 20px;font-size:13px}
 .preview .ph svg{width:40px;height:40px;opacity:.5;margin-bottom:10px}
-.pv-tools{position:absolute;right:10px;bottom:10px;display:flex;gap:4px;background:rgba(255,255,255,.9);
+.pv-tools{position:absolute;right:10px;bottom:10px;display:flex;gap:4px;background:color-mix(in srgb,var(--surface) 92%,transparent);
   border:1px solid var(--border);border-radius:99px;padding:4px;box-shadow:var(--sh-1);backdrop-filter:blur(6px)}
 .pv-tools button{width:28px;height:28px;border:none;background:transparent;border-radius:50%;cursor:pointer;color:var(--ink-2);display:grid;place-items:center}
 .pv-tools button:hover{background:var(--surface-2);color:var(--ink)}
@@ -213,6 +274,21 @@ input[type=range]:disabled{opacity:.5}
 .toast.out{animation:tout .3s var(--ease) forwards}
 @keyframes tin{to{transform:none;opacity:1}} @keyframes tout{to{transform:translateY(12px);opacity:0}}
 
+/* 长渲染询问 (不让人对着「载入中」干等) */
+.btn.danger{background:var(--err-soft);border-color:#f4cfcf;color:#b91c1c}
+.btn.danger:hover{background:#fbdada;border-color:#eeb4b4}
+:root[data-theme="dark"] .btn.danger{background:#2e1a1a;border-color:#5d2a2a;color:#ff9d9d}
+:root[data-theme="dark"] .btn.danger:hover{background:#3a2020}
+.cv-ask{position:fixed;inset:0;z-index:130;display:grid;place-items:center;
+  background:rgba(15,20,28,.42);animation:askin .15s var(--ease)}
+.cv-ask-card{width:min(420px,86vw);background:var(--surface);border:1px solid var(--border-2);
+  border-radius:var(--r-lg);box-shadow:var(--sh-3);padding:22px 24px}
+.cv-ask-card .t{font-size:15px;font-weight:650;color:var(--ink)}
+.cv-ask-card .d{margin-top:8px;font-size:13px;line-height:1.8;color:var(--ink-2)}
+.cv-ask-card .d b{color:var(--ink);font-family:var(--mono)}
+.cv-ask-card .row{display:flex;gap:10px;justify-content:flex-end;margin-top:20px}
+@keyframes askin{from{opacity:0}to{opacity:1}}
+
 /* 骨架 */
 .skel{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);height:120px;margin:18px 22px;
   position:relative;overflow:hidden}
@@ -240,6 +316,8 @@ input[type=range]:disabled{opacity:.5}
     <div class="brand"><span class="logo"><img src="data:image/png;base64,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" style="width:100%;height:100%;border-radius:8px;display:block"></span>GMT&nbsp;VectorLab <small>画布式改图</small></div>
     <div class="vr"></div>
     <button class="btn ghost" id="btnOpenScript" title="打开任意 GMT 脚本 (.sh)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>打开脚本</button>
+    <button class="btn ghost" id="btnOpenPrj" title="打开 .gvlproj 工程（命令级改动 + 每张画布的元素改动）">打开工程</button>
+    <button class="btn ghost" id="btnSavePrj" title="保存工程 (.gvlproj)：脚本引用 + 命令改动 + 各画布标注，下次打开可继续编辑（不含成品图）">保存工程</button>
     <span class="pill mono" id="scriptChip">未选择</span>
     <select class="pill mono" id="scriptSel" title="切换脚本" style="display:none"></select>
     <span class="pill ok" id="shaPill"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>源脚本只读</span>
@@ -249,9 +327,16 @@ input[type=range]:disabled{opacity:.5}
       <button data-mode="cmd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>命令参数</button>
     </div>
     <div class="spacer"></div>
-    <button class="btn ghost" id="btnLoadEl" title="载入 #2 画布导出的元素 overlay"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>载入元素</button>
-    <button class="btn" id="btnExportPng" title="导出图件 (PNG/JPG, 可选分辨率)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>导出图</button>
-    <button class="btn" id="btnExport" title="导出 overlay.json (命令级+元素级)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>导出</button>
+    <div class="theme-wrap" id="themeWrap">
+      <button class="btn ghost icon" id="btnTheme" title="主题：浅色 / 深色 / 跟随系统"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg></button>
+      <div class="theme-menu" id="themeMenu">
+        <button data-theme="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>浅色</button>
+        <button data-theme="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>深色</button>
+        <button data-theme="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>跟随系统</button>
+      </div>
+    </div>
+    <button class="btn ghost" id="btnLoadEl" title="载入旧版 overlay JSON（仅用于从旧工作流迁移改动）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>载入元素</button>
+    <button class="btn" id="btnExportPng" title="导出图片 (PNG/JPG)：把当前画布的全部改动烘焙成一张成品图，不可再编辑"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>导出图片</button>
     <button class="btn" id="btnReset" title="清空所有改动"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></button>
     <button class="btn primary" id="btnRender" title="重新渲染"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>渲染</button>
   </div>
@@ -277,14 +362,17 @@ input[type=range]:disabled{opacity:.5}
     </div>
 
     <div id="cvView">
-      <div class="rail left">
+      <div class="rail left cv-rail">
         <div class="sess" id="cvSess"></div>
-        <div class="sect-h">文字元素 · 点击选中</div>
-        <div class="cv-list" id="cvList"></div>
+        <div class="sect" id="figSect" style="display:none">
+          <div class="sect-h" id="figHead"><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>画布 · 图件<span class="cnt" id="figCnt">0</span></div>
+          <div class="sect-b"><div class="cv-list" id="figList" style="max-height:32vh;overflow:auto"></div></div>
+        </div>
+        <div id="cvList"></div>
       </div>
       <div class="center" id="cvStageHost"></div>
       <div class="rail right">
-        <div class="sect-h">元素属性</div>
+        <div class="sect-h" style="cursor:default">元素属性</div>
         <div id="cvPropsHost"></div>
         <div class="statusbar" id="cvStatus"><span class="dot"></span><span id="cvStatusTxt">就绪</span></div>
       </div>
@@ -294,7 +382,7 @@ input[type=range]:disabled{opacity:.5}
 <div id="toasts"></div>
 <div id="exModal" style="display:none;position:fixed;inset:0;z-index:90;background:rgba(20,25,35,.35);align-items:center;justify-content:center">
   <div style="width:380px;background:var(--surface);border-radius:var(--r-lg);box-shadow:var(--sh-3);padding:20px 22px">
-    <div style="font-size:16px;font-weight:650;margin-bottom:14px">导出图件</div>
+    <div style="font-size:16px;font-weight:650;margin-bottom:14px">导出图片</div>
     <div class="ctl"><label>格式</label><div class="seg" id="exFmt">
       <button data-fmt="png" class="on">PNG · 无损</button>
       <button data-fmt="jpg">JPG · 有损</button></div></div>
@@ -335,24 +423,24 @@ const Backend = {
     if(isHttp()){const r=await fetch('/api/ir'+(script?'?script='+encodeURIComponent(script):''));return await r.json();}
     throw 'NOBACKEND';
   },
-  async render(overlay, elements, script){
-    if(isWV()) return await window.pywebview.api.render(JSON.stringify(overlay), elements?JSON.stringify(elements):null, script||null);
-    if(isHttp()){const r=await fetch('/api/render',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({overlay,elements,script})});return await r.json();}
+  async render(overlay, elements, script, figure){
+    if(isWV()) return await window.pywebview.api.render(JSON.stringify(overlay), elements?JSON.stringify(elements):null, script||null, figure||null);
+    if(isHttp()){const r=await fetch('/api/render',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({overlay,elements,script,figure})});return await r.json();}
     throw 'NOBACKEND';
   },
-  async getCanvas(overlay, script, fresh){
-    if(isWV()) return await window.pywebview.api.get_canvas(JSON.stringify(overlay||{ops:[]}), script||null, !!fresh);
-    if(isHttp()){const r=await fetch('/api/canvas',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({overlay:overlay||{ops:[]},script,fresh:!!fresh})});return await r.json();}
+  async getCanvas(overlay, script, fresh, figure){
+    if(isWV()) return await window.pywebview.api.get_canvas(JSON.stringify(overlay||{ops:[]}), script||null, !!fresh, figure||null);
+    if(isHttp()){const r=await fetch('/api/canvas',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({overlay:overlay||{ops:[]},script,fresh:!!fresh,figure})});return await r.json();}
     throw 'NOBACKEND';
   },
-  async bake(overlay, elements, script){
-    if(isWV()) return await window.pywebview.api.bake(JSON.stringify(overlay||{ops:[]}), JSON.stringify(elements||{}), script||null);
-    if(isHttp()){const r=await fetch('/api/bake',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({overlay:overlay||{ops:[]},elements:elements||{},script})});return await r.json();}
+  async bake(overlay, elements, script, figure){
+    if(isWV()) return await window.pywebview.api.bake(JSON.stringify(overlay||{ops:[]}), JSON.stringify(elements||{}), script||null, figure||null);
+    if(isHttp()){const r=await fetch('/api/bake',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({overlay:overlay||{ops:[]},elements:elements||{},script,figure})});return await r.json();}
     throw 'NOBACKEND';
   },
-  async exportPng(overlay, elements, script, fmt, scale, quality){
-    if(isWV()) return await window.pywebview.api.export_png(JSON.stringify(overlay||{ops:[]}), JSON.stringify(elements||{}), script||null, fmt||'png', scale||2, quality||92);
-    if(isHttp()){const r=await fetch('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({overlay:overlay||{ops:[]},elements:elements||{},script,fmt,scale,quality})});const j=await r.json();
+  async exportPng(overlay, elements, script, fmt, scale, quality, figure){
+    if(isWV()) return await window.pywebview.api.export_png(JSON.stringify(overlay||{ops:[]}), JSON.stringify(elements||{}), script||null, fmt||'png', scale||2, quality||92, figure||null);
+    if(isHttp()){const r=await fetch('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({overlay:overlay||{ops:[]},elements:elements||{},script,fmt,scale,quality,figure})});const j=await r.json();
       if(j.error||!j.data) return {error:j.error||'未生成图件'};
       const a=document.createElement('a');a.href='data:image/'+(j.fmt==='jpg'?'jpeg':'png')+';base64,'+j.data;a.download=(j.name||'figure')+'.'+j.fmt;a.click();
       return {saved:a.download,fmt:j.fmt,width:j.width,height:j.height,baked_elements:j.baked_elements||0};}
@@ -372,9 +460,18 @@ const Backend = {
     if(isWV()) return await window.pywebview.api.open_script();
     return null;
   },
-  saveOverlay(json){ if(isWV()) return window.pywebview.api.save_overlay(json);
-    const b=new Blob([json],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='overlay_gui.json';a.click(); },
   openOverlay(){ if(isWV()) return window.pywebview.api.open_overlay(); $('fileEl').click(); return null; },
+  async saveProject(json){
+    if(isWV()) return await window.pywebview.api.save_project(json);
+    const b=new Blob([json],{type:'application/json'});const a=document.createElement('a');
+    a.href=URL.createObjectURL(b);a.download='figure.gvlproj';a.click();return 'figure.gvlproj';
+  },
+  async openProject(){ if(isWV()) return await window.pywebview.api.open_project(); return null; },
+  async cancelRender(){
+    if(isWV() && typeof window.pywebview.api.cancel_render==='function')
+      return await window.pywebview.api.cancel_render();
+    return {cancelled:false};
+  },
 };
 
 let IR=null, F={}, OPEDIT={}, ELEMENTS=null, CUR=0;
@@ -394,6 +491,8 @@ const PALETTE=["black","white","#e41a1c","#377eb8","#4daf4a","#984ea3","#ff7f00"
 /* ---------- 加载 ---------- */
 let CUR_SCRIPT=null;
 let MODE='canvas', CVHANDLE=null, CANVAS_READY=false;
+/* 多画布: 一个脚本可能出多张图, 每张图独立保存元素改动 */
+let FIGURES=[], CUR_FIG=null, FIG_ELEMENTS={};
 
 function showEmptyState(msg){
   $('fields').innerHTML='<div class="ch-empty" style="color:var(--warn);line-height:1.7;white-space:pre-wrap">'+esc(msg)+'</div>';
@@ -403,11 +502,17 @@ function showEmptyState(msg){
 }
 function applyIR(j){
   CUR_SCRIPT=j.script; IR=j; F={}; OPEDIT={};
+  FIGURES=[]; CUR_FIG=null; FIG_ELEMENTS={};
   REV=0; RENDERED_REV=-1; STAMP=null;      // 换了脚本/重新解析, 旧版本号作废
   j.ops.forEach(op=>{F[op.index]={};for(const k in op.options)F[op.index][k]={orig:op.options[k],data:FK.parseField(op.module,k,op.options[k])};});
   $('scriptChip').textContent=j.script;
-  const sess='<b>会话</b> '+esc(j.begin)+' … '+esc(j.end);
+  let sess='<b>会话</b> '+esc(j.begin)+' … '+esc(j.end);
+  if(j.sessions&&j.sessions.length>1){
+    const names=j.sessions.map(s=>s.begin.split(/\s+/)[2]||'figure').slice(0,4).join(' / ');
+    sess='<b>会话</b> '+j.sessions.length+' 个 <span style="color:var(--ink-3)">· '+esc(names)+(j.sessions.length>4?' …':'')+'</span>';
+  }
   $('sess').innerHTML=sess; if($('cvSess')) $('cvSess').innerHTML=sess;
+  refreshFigures([], null);
   renderTree();
 }
 /* ---------- 欢迎页: 启动不自动加载脚本, 等用户选择 ---------- */
@@ -453,14 +558,58 @@ function startTimer(msg){ stopTimer(); const t0=Date.now();
   TICK=setInterval(()=>setStatus('warn',msg+' 已用 '+fmtSec((Date.now()-t0)/1000)),500); return t0; }
 function stopTimer(){ if(TICK){clearInterval(TICK);TICK=null;} }
 
-async function loadCanvas(){
+/* ---------- 长渲染: 到点先问一句, 不让人对着「载入中」干等 ---------- */
+let ASK_T=null, ASK_T0=0, ASK_NEXT=120000;   // 2 分钟开始问; 选「继续等待」后隔 5 分钟再问
+function hideLongAsk(){ const m=$('cvAsk'); if(m) m.remove(); }
+function longAskStop(){ if(ASK_T){clearInterval(ASK_T);ASK_T=null;} ASK_NEXT=120000; hideLongAsk(); }
+function longAskStart(label){
+  longAskStop();
+  ASK_T0=Date.now();
+  ASK_T=setInterval(()=>{
+    const sec=Math.round((Date.now()-ASK_T0)/1000);
+    const m=$('cvAsk');
+    if(m){ const e=$('cvAskSec'); if(e) e.textContent=fmtSec(sec); return; }
+    if(Date.now()-ASK_T0<ASK_NEXT) return;
+    showLongAsk(label, sec);
+  },1000);
+}
+function showLongAsk(label, sec){
+  const m=document.createElement('div'); m.id='cvAsk'; m.className='cv-ask';
+  m.innerHTML='<div class="cv-ask-card">'+
+    '<div class="t">这张图还在渲染</div>'+
+    '<div class="d">'+esc(label)+' 已经用了 <b id="cvAskSec">'+fmtSec(sec)+'</b>，GMT 进程还在跑。<br>'+
+    '大图、大数据量或远程数据下载都可能慢几分钟。要接着等吗？</div>'+
+    '<div class="row"><button class="btn" id="cvAskKeep">继续等待</button>'+
+    '<button class="btn danger" id="cvAskStop">取消这次渲染</button></div></div>';
+  document.body.appendChild(m);
+  $('cvAskKeep').onclick=()=>{ ASK_NEXT=(Date.now()-ASK_T0)+300000; hideLongAsk(); };
+  $('cvAskStop').onclick=async()=>{
+    hideLongAsk(); setStatus('warn','正在取消渲染…');
+    try{
+      const r=await Backend.cancelRender();
+      if(r&&r.cancelled) toast('warn','正在取消','已结束 GMT 进程，稍等界面恢复');
+      else toast('warn','没有在跑的渲染','可能刚刚已经完成');
+    }catch(e){ toast('err','取消失败',String(e)); }
+  };
+}
+function isCancelled(j){ return !!(j && j.error && /已取消渲染/.test(j.error)); }
+
+async function loadCanvas(fig){
+  if(busy) return;
+  busy=true;
+  const rb=$('btnRender'); const oldBtn=rb?rb.innerHTML:'';
+  if(rb){rb.disabled=true;rb.innerHTML='<span class="spin"></span>载入中';}
   setStatus('warn','正在渲染可编辑画布…');
   startTimer('正在渲染可编辑画布…');
+  longAskStart('可编辑画布渲染');
   const revAt=REV;
   try{
-    const j=await Backend.getCanvas(buildOverlay(), CUR_SCRIPT);
+    const j=await Backend.getCanvas(buildOverlay(), CUR_SCRIPT, false, fig||CUR_FIG);
     stopTimer();
+    if(isCancelled(j)){ setStatus('warn','已取消渲染 · 可点「渲染」重新出图'); return; }
     if(j.error||!j.svg){ showCanvasError(j); return; }
+    refreshFigures(j.figures, fig||CUR_FIG);
+    ELEMENTS=FIG_ELEMENTS[CUR_FIG]||{};
     if(CVHANDLE){ try{CVHANDLE.destroy();}catch(e){} }
     CVHANDLE=GMTCanvas.init({stage:$('cvStageHost'),props:$('cvPropsHost'),list:$('cvList'),svg:j.svg,onChange:updateEditPill});
     CANVAS_READY=true; RENDERED_REV=revAt;
@@ -468,11 +617,18 @@ async function loadCanvas(){
     if(j.sha_ok!==undefined) setSha(j.sha_ok);
     updateEditPill();
     let msg='画布就绪 · 直接拖拽图中元素编辑';
+    if(FIGURES.length>1) msg+=' · 共 '+FIGURES.length+' 张图';
     if(j.n_vec!=null) msg+=' ('+j.n_vec+' 矢量 · '+j.n_txt+' 文字)';
-    msg += j.cached ? ' · 复用上次渲染' : ' · 用时 '+fmtSec(j.t_total);
+    msg += j.cached ? ' · 复用上次渲染'
+         : ' · GMT '+fmtSec(j.t_render!=null?j.t_render:j.t_total)+(j.t_svg!=null?' + 画布 '+fmtSec(j.t_svg):'');
     setStatus(j.warn?'warn':'ok',msg);
     if(j.warn) toast('warn','GMT 有告警',j.warn);
   }catch(e){ stopTimer(); showCanvasError({error:'画布初始化失败: '+String(e)}); }
+  finally{
+    longAskStop();
+    busy=false;
+    if(rb){rb.disabled=false;rb.innerHTML=oldBtn;}
+  }
 }
 function _copyText(t){
   function fb(){
@@ -504,8 +660,36 @@ function showCanvasError(j){
   toast('err','画布渲染失败',msg.split('\n')[0]);
 }
 function currentElements(){
-  if(MODE==='canvas'&&CVHANDLE) return CVHANDLE.collect();
+  if(MODE==='canvas'&&CVHANDLE){
+    const els=CVHANDLE.collect();
+    if(CUR_FIG) FIG_ELEMENTS[CUR_FIG]=els;
+    return els;
+  }
+  if(FIG_ELEMENTS[CUR_FIG]) return FIG_ELEMENTS[CUR_FIG];
   return ELEMENTS||{};
+}
+/* 多画布: 图件列表（多于一张时才显示） */
+function refreshFigures(figs, prefer){
+  FIGURES=figs||[];
+  const keys=FIGURES.map(f=>f.key);
+  if(!CUR_FIG||keys.indexOf(CUR_FIG)<0){
+    CUR_FIG=(prefer&&keys.indexOf(prefer)>=0)?prefer:(keys[0]||null);
+  }
+  const sect=$('figSect'), list=$('figList'), cnt=$('figCnt');
+  if(!sect||!list) return;
+  const multi=FIGURES.length>1;
+  sect.style.display=multi?'':'none';
+  if(cnt) cnt.textContent=FIGURES.length;
+  list.innerHTML=FIGURES.map((f,i)=>'<div class="li'+(f.key===CUR_FIG?' on':'')+'" data-fig="'+esc(f.key)+'"><span class="nm">'+esc(f.name)+'</span><span class="ix">'+(i+1)+'</span></div>').join('');
+  list.querySelectorAll('[data-fig]').forEach(el=>{el.onclick=()=>switchFigure(el.dataset.fig);});
+}
+async function switchFigure(key){
+  if(!key||key===CUR_FIG) return;
+  if(busy){ toast('warn','请稍候','当前渲染还没完成，完成后再切换画布'); return; }
+  if(MODE==='canvas'&&CVHANDLE) FIG_ELEMENTS[CUR_FIG]=CVHANDLE.collect();
+  CUR_FIG=key; ELEMENTS=FIG_ELEMENTS[key]||{};
+  refreshFigures(FIGURES, key);
+  await loadCanvas(key);
 }
 function setSha(ok){const sp=$('shaPill');sp.className='pill '+(ok?'ok':'bad');
   sp.innerHTML=(ok?SVG('<path d="M20 6 9 17l-5-5"/>',2):ICON.err)+'源脚本'+(ok?'只读':'被改动');}
@@ -514,6 +698,8 @@ async function refreshScripts(){
   try{
     const s=await Backend.listScripts();
     if(!s || !s.scripts) return;
+    // 工作目录里只有一个脚本时自动载入: 示例包双击即可见下图
+    if(!CUR_SCRIPT && s.scripts.length===1){ CUR_SCRIPT=s.scripts[0]; boot(); return; }
     const sel=$('scriptSel'); if(!sel) return;
     sel.innerHTML='';
     s.scripts.forEach(n=>{const o=document.createElement('option');o.value=n;o.textContent=n;if(n===CUR_SCRIPT)o.selected=true;sel.appendChild(o);});
@@ -696,25 +882,32 @@ async function doRender(silent){
   busy=true;const b=$('btnRender');const old=b.innerHTML;b.disabled=true;b.innerHTML='<span class="spin"></span>渲染中';
   setStatus('warn','正在调用 GMT 重渲染…');
   startTimer('正在调用 GMT 重渲染…');
+  longAskStart('GMT 重渲染');
   try{
-    const j=await Backend.render(buildOverlay(),ELEMENTS,CUR_SCRIPT);
+    const els=MODE==='canvas'?currentElements():(ELEMENTS||null);
+    const j=await Backend.render(buildOverlay(),els,CUR_SCRIPT,CUR_FIG);
     stopTimer();
+    if(isCancelled(j)){ setStatus('warn','已取消渲染 · 可点「渲染」重试'); return; }
+    if(j.figures&&j.figures.length) refreshFigures(j.figures,CUR_FIG);
     showResult(j,silent,revAt);
   }catch(e){ stopTimer(); $('errBox').innerHTML='<div class="err-detail">后端错误：'+esc(String(e))+'</div>';setStatus('err','渲染失败');toast('err','渲染失败',String(e));}
-  finally{busy=false;b.disabled=false;b.innerHTML=old;}
+  finally{longAskStop();busy=false;b.disabled=false;b.innerHTML=old;}
 }
 async function doRenderCanvas(silent){
   if(busy)return;
-  if(CVHANDLE) ELEMENTS=CVHANDLE.collect();          // 保留当前元素改动
+  if(CVHANDLE&&CUR_FIG) FIG_ELEMENTS[CUR_FIG]=CVHANDLE.collect();   // 保留当前画布的元素改动
   const revAt=REV;
   busy=true;const b=$('btnRender');const old=b.innerHTML;b.disabled=true;b.innerHTML='<span class="spin"></span>渲染中';
   setStatus('warn','正在按命令级改动重渲染…');
   startTimer('正在按命令级改动重渲染…');
+  longAskStart('按命令级改动重渲染');
   try{
-    const els=ELEMENTS||{};
-    const j=await Backend.getCanvas(buildOverlay(),CUR_SCRIPT,true);
+    const j=await Backend.getCanvas(buildOverlay(),CUR_SCRIPT,true,CUR_FIG);
     stopTimer();
+    if(isCancelled(j)){ setStatus('warn','已取消渲染 · 可点「渲染」重试'); return; }
     if(j.error||!j.svg){ showCanvasError(j); return; }
+    refreshFigures(j.figures,CUR_FIG);
+    const els=FIG_ELEMENTS[CUR_FIG]||{};
     if(CVHANDLE){ try{CVHANDLE.destroy();}catch(e){} }
     CVHANDLE=GMTCanvas.init({stage:$('cvStageHost'),props:$('cvPropsHost'),list:$('cvList'),svg:j.svg,onChange:updateEditPill});
     CANVAS_READY=true; RENDERED_REV=revAt;
@@ -722,12 +915,14 @@ async function doRenderCanvas(silent){
     if(j.sha_ok!==undefined) setSha(j.sha_ok);
     updateEditPill();
     let msg='已重渲染并更新画布 · '+(j.changed?j.changed.length:0)+' 处命令改动 · 用时 '+fmtSec(j.t_total);
+    if(j.t_svg!=null) msg+=' (GMT '+fmtSec(j.t_render)+' + 画布 '+fmtSec(j.t_svg)+')';
     if(hit)msg+=' · 保留 '+hit+' 个元素改动';
+    if(FIGURES.length>1) msg+=' · 共 '+FIGURES.length+' 张图';
     setStatus(j.warn?'warn':'ok',msg);
     if(!silent){ toast(j.warn?'warn':'ok',j.warn?'渲染完成(有告警)':'画布已更新',msg); }
     if(j.warn) toast('warn','GMT 有告警',j.warn);
   }catch(e){ stopTimer(); showCanvasError({error:'后端错误: '+String(e)}); }
-  finally{busy=false;b.disabled=false;b.innerHTML=old;}
+  finally{longAskStop();busy=false;b.disabled=false;b.innerHTML=old;}
 }
 function runRender(silent){ return MODE==='cmd' ? doRender(silent) : doRenderCanvas(silent); }
 function renderBtn(){
@@ -738,7 +933,7 @@ function renderBtn(){
 
 function setMode(m){
   if(m===MODE) return;
-  if(MODE==='canvas'&&CVHANDLE) ELEMENTS=CVHANDLE.collect();   // 离开画布前同步元素
+  if(MODE==='canvas'&&CVHANDLE){ ELEMENTS=CVHANDLE.collect(); if(CUR_FIG) FIG_ELEMENTS[CUR_FIG]=ELEMENTS; }   // 离开画布前同步元素
   MODE=m;
   document.querySelectorAll('#modeSeg button').forEach(b=>b.classList.toggle('on',b.dataset.mode===m));
   $('cmdView').classList.toggle('hide',m!=='cmd');
@@ -749,7 +944,7 @@ function setMode(m){
   if(m==='canvas'){
     // 参数改过但没点渲染: 显示旧画布, 让用户自己决定何时重渲染 (不自动跑)
     if(CANVAS_READY && renderPending()){ toast('warn','参数已改未渲染','画布显示的是上一次渲染结果, 点「渲染」更新'); return; }
-    if(!CANVAS_READY) loadCanvas();
+    if(!CANVAS_READY) loadCanvas(CUR_FIG);
   }
   updateEditPill();
 }
@@ -773,22 +968,66 @@ function showResult(j,silent,revAt){
   if(j.warn&&silent) toast('warn','GMT 有告警',j.warn);
 }
 
-/* ---------- 导出 / 载入元素 ---------- */
-function doExport(){if(!IR){toast('warn','未加载脚本','先「打开脚本」选择一个 GMT 脚本');return;}
-  const out={script:IR.script,sha256:IR.sha256,ops:buildOverlay().ops,elements:currentElements()};
-  Backend.saveOverlay(JSON.stringify(out,null,2));toast('ok','已导出 overlay','含命令级 + 元素级改动');}
-function loadElements(obj){if(obj&&obj.elements)obj=obj.elements;ELEMENTS=obj;
-  if(MODE==='canvas'&&CVHANDLE){ CVHANDLE.applyOverlay(obj); }
+/* ---------- 载入元素 ---------- */
+function loadElements(obj){
+  const figs=obj&&obj.canvases&&typeof obj.canvases==='object'?obj.canvases:null;
+  if(figs){ FIG_ELEMENTS=figs; if(obj.figure) CUR_FIG=obj.figure; ELEMENTS=FIG_ELEMENTS[CUR_FIG]||{}; }
+  else { if(obj&&obj.elements)obj=obj.elements; ELEMENTS=obj; if(CUR_FIG) FIG_ELEMENTS[CUR_FIG]=obj; }
+  if(MODE==='canvas'&&CVHANDLE){ CVHANDLE.applyOverlay(ELEMENTS); }
   $('btnLoadEl').innerHTML=SVG('<path d="M20 6 9 17l-5-5"/>',2)+'元素 ✓';renderChanges();updateEditPill();
   setStatus('ok','已载入元素 overlay（'+Object.keys(obj).length+' 项），渲染时一并烘焙');toast('ok','元素 overlay 已载入','点「渲染」查看合并效果');}
 $('fileEl').onchange=e=>{if(!e.target.files[0])return;const r=new FileReader();r.onload=()=>{try{loadElements(JSON.parse(r.result));}catch(x){toast('err','解析失败',String(x));}};r.readAsText(e.target.files[0]);};
+
+/* ---------- 工程文件 (.gvlproj): 命令级改动 + 每张画布的元素改动 ---------- */
+function projectDoc(){
+  if(MODE==='canvas'&&CVHANDLE&&CUR_FIG) FIG_ELEMENTS[CUR_FIG]=CVHANDLE.collect();
+  return {tool:'GMT-VectorLab',version:1,work:(IR&&IR.workdir)||null,
+          script:IR?IR.script:null,sha256:IR?IR.sha256:null,
+          figure:CUR_FIG,ops:buildOverlay().ops,canvases:FIG_ELEMENTS};
+}
+async function doSaveProject(){
+  if(!IR){toast('warn','未加载脚本','先「打开脚本」选择一个 GMT 脚本');return;}
+  try{
+    const p=await Backend.saveProject(JSON.stringify(projectDoc(),null,2));
+    if(p&&p.error){toast('err','保存工程失败',p.error);return;}
+    if(p) toast('ok','工程已保存',String(p));
+  }catch(e){toast('err','保存工程失败',String(e));}
+}
+async function doOpenProject(){
+  try{
+    const r=await Backend.openProject();
+    if(!r) return;
+    if(r.error){toast('err','打开工程失败',r.error);return;}
+    const d=r.data||{};
+    const savedOps=Array.isArray(d.ops)?d.ops:[];
+    const savedFigs=(d.canvases&&typeof d.canvases==='object')?JSON.parse(JSON.stringify(d.canvases)):{};
+    if(d.elements&&typeof d.elements==='object'){
+      const first=d.figure||Object.keys(savedFigs)[0]||'figure.pdf';
+      if(!savedFigs[first]) savedFigs[first]=d.elements;   // 兼容旧版 overlay 导出
+    }
+    CUR_SCRIPT=r.script;
+    const j=await Backend.getIR(CUR_SCRIPT);
+    if(j.error){showEmptyState(j.error);return;}
+    applyIR(j);
+    savedOps.forEach(o=>{if(o&&typeof o.index==='number'){OPEDIT[o.index]={set:Object.assign({},o.set||{})};}});
+    FIG_ELEMENTS=savedFigs;
+    CUR_FIG=d.figure||Object.keys(savedFigs)[0]||null;
+    ELEMENTS=FIG_ELEMENTS[CUR_FIG]||{};
+    CANVAS_READY=false; if(CVHANDLE){try{CVHANDLE.destroy();}catch(e){} CVHANDLE=null;}
+    renderTree();renderChanges();updateEditPill();
+    if(d.sha256&&d.sha256!==j.sha256) toast('warn','源脚本已变化','改动按原图层索引套用，请核对预览');
+    await refreshScripts();
+    if(MODE==='canvas') await loadCanvas(CUR_FIG);
+    toast('ok','工程已打开',(CUR_SCRIPT||'')+' · '+Object.keys(FIG_ELEMENTS).length+' 张画布');
+  }catch(e){toast('err','打开工程失败',String(e));}
+}
 
 /* ---------- 预览缩放 ---------- */
 $('pvfit').onclick=()=>{const im=$('pvimg');im.style.maxWidth='100%';im.style.maxHeight='52vh';im.style.width='auto';};
 $('pvfull').onclick=()=>{const im=$('pvimg');im.style.maxWidth='none';im.style.maxHeight='none';};
 
 /* ---------- 复位 ---------- */
-$('btnReset').onclick=()=>{if(!confirm('清空所有命令级改动与元素 overlay？'))return;OPEDIT={};ELEMENTS=null;
+$('btnReset').onclick=()=>{if(!confirm('清空所有命令级改动与元素 overlay（含所有画布）？'))return;OPEDIT={};ELEMENTS=null;FIG_ELEMENTS={};
   if(MODE==='canvas'&&CVHANDLE){ try{CVHANDLE.resetElements();}catch(e){} }
   IR.ops.forEach(op=>{for(const k in F[op.index])F[op.index][k].data=FK.parseField(op.module,k,F[op.index][k].orig);});
   $('btnLoadEl').innerHTML=SVG('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>')+'载入元素';
@@ -809,10 +1048,37 @@ function cssEsc(s){return (window.CSS&&CSS.escape)?CSS.escape(s):s.replace(/[#\[
 
 /* ---------- 绑定 ---------- */
 $('btnRender').onclick=renderBtn;
-$('btnExport').onclick=doExport;
 $('btnLoadEl').onclick=async()=>{const r=await Backend.openOverlay();if(r)loadElements(typeof r==='string'?JSON.parse(r):r);};
 document.querySelectorAll('#modeSeg button').forEach(b=>b.onclick=()=>setMode(b.dataset.mode));
 $('btnLoadEl').style.display='none';   // 默认画布模式: 元素直接在画布编辑, 无需载入
+/* ---------- 主题: 浅色 / 深色 / 跟随系统 ---------- */
+const THEME_KEY='gvl.theme';
+function themePref(){ try{return localStorage.getItem(THEME_KEY)||'system';}catch(e){return 'system';} }
+function applyTheme(t){
+  const dark = t==='dark' || (t==='system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.dataset.theme = dark?'dark':'light';
+  document.documentElement.dataset.themePref = t;
+  try{localStorage.setItem(THEME_KEY,t);}catch(e){}
+  document.querySelectorAll('#themeMenu button').forEach(b=>b.classList.toggle('on',b.dataset.theme===t));
+}
+applyTheme(themePref());
+$('btnTheme').onclick=e=>{ e.stopPropagation(); $('themeMenu').classList.toggle('open'); };
+document.querySelectorAll('#themeMenu button').forEach(b=>b.onclick=e=>{
+  e.stopPropagation(); applyTheme(b.dataset.theme); $('themeMenu').classList.remove('open');
+});
+document.addEventListener('pointerdown',e=>{ if(!$('themeWrap').contains(e.target)) $('themeMenu').classList.remove('open'); });
+try{
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>{ if(themePref()==='system') applyTheme('system'); });
+}catch(e){}
+/* 画布·图件分区可折叠 */
+(function(){
+  const sect=$('figSect'), head=$('figHead');
+  try{ if(localStorage.getItem('gvl.ui.fig')==='1') sect.classList.add('closed'); }catch(e){}
+  head.onclick=()=>{ sect.classList.toggle('closed');
+    try{ localStorage.setItem('gvl.ui.fig', sect.classList.contains('closed')?'1':'0'); }catch(e){} };
+})();
+$('btnOpenPrj').onclick=doOpenProject;
+$('btnSavePrj').onclick=doSaveProject;
 $('btnExportPng').onclick=()=>{ if(!IR){toast('warn','未加载脚本','先「打开脚本」选择一个 GMT 脚本');return;} $('exModal').style.display='flex'; };
 let EX_FMT='png';
 function exSync(){
@@ -830,15 +1096,18 @@ $('exGo').onclick=async()=>{
   // DPI -> 渲染倍数: PDF 页面按 72pt/英寸 排版, scale = dpi/72; 质量固定 92, 用户只管 DPI
   const scale = EX_FMT==='jpg' ? Math.min(1200/72, Math.max(1, (+$('exDpi').value||300)/72)) : 4;
   const qual  = 92;
+  longAskStart('导出渲染');
   try{
     setStatus('warn','正在渲染并导出 '+EX_FMT.toUpperCase()+'…');
-    const r=await Backend.exportPng(buildOverlay(),currentElements(),CUR_SCRIPT,EX_FMT,scale,qual);
+    const r=await Backend.exportPng(buildOverlay(),currentElements(),CUR_SCRIPT,EX_FMT,scale,qual,CUR_FIG);
     if(!r) return;                       // 取消
+    if(isCancelled(r)){setStatus('warn','已取消导出');return;}
     if(r.error){toast('err','导出失败',r.error);setStatus('err','导出失败');return;}
     const sz=r.width?(' · '+r.width+'×'+r.height+' px'):'';
     toast('ok','已导出 '+EX_FMT.toUpperCase(),(r.saved||'')+sz+(r.baked_elements?(' · 烘焙 '+r.baked_elements+' 个元素'):''));
     setStatus('ok',EX_FMT.toUpperCase()+' 已导出: '+(r.saved||'')+sz);
   }catch(e){toast('err','导出失败',String(e));setStatus('err','导出失败');}
+  finally{longAskStop();}
 };
 
 $('btnOpenScript').onclick=async()=>{
@@ -883,19 +1152,36 @@ function onScriptChanged(){
 setInterval(()=>{ if(reachable() && IR && CUR_SCRIPT) pollScript(); }, 3000);
 
 /* ---------- 稳健启动: 先进欢迎页 (空白), 用户选了脚本才加载渲染 ---------- */
-let _booted=false;
+/* 桥接是 pywebview 注入的, 首次冷启动 (onefile 解压 + WebView2 初始化 + 杀软扫描)
+   可能要几十秒。这里永不放弃: 先 200ms 一次快速捕捉, 15 秒后退到 1 秒一次,
+   直到真的连上为止 —— 旧版 12 秒后停止轮询, 会永久停在"等待后端桥接就绪…"。 */
+let _booted=false, _homeBusy=false;
+const _homeT0=Date.now();
+let _waitT=null, _waitTicks=0;
 const reachable=()=>isWV()||isHttp();
 async function startHome(){
-  if(!reachable()){ setStatus('warn','等待后端桥接就绪…'); return; }
-  showWelcome();
-  try{ await refreshScripts(); }catch(e){}
-  _booted=true;
+  if(_booted||_homeBusy) return;
+  if(!reachable()){
+    const sec=Math.round((Date.now()-_homeT0)/1000);
+    setStatus('warn', sec<6 ? '正在连接后端…'
+      : '后端尚未就绪, 仍在重试… (已等待 '+sec+' 秒)');
+    return;
+  }
+  _homeBusy=true;
+  try{
+    showWelcome();
+    try{ await refreshScripts(); }catch(e){}
+    _booted=true;
+  }finally{
+    _homeBusy=false;
+    if(_booted&&_waitT){ clearTimeout(_waitT); _waitT=null; }
+  }
 }
-if(reachable()){
+window.addEventListener('pywebviewready',()=>{ startHome(); });
+(function waitBackend(){
+  if(_booted) return;
   startHome();
-}else{
-  window.addEventListener('pywebviewready',()=>{ if(!_booted) startHome(); });
-  let ticks=0;
-  const t=setInterval(()=>{ ticks++; if(!_booted) startHome(); if(_booted||ticks>60) clearInterval(t); },200);
-}
+  _waitTicks++;
+  _waitT=setTimeout(waitBackend, _waitTicks<75?200:1000);
+})();
 </script></body></html>

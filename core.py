@@ -31,10 +31,17 @@ def get_ir(workdir, script):
     ir = GE.parse_script(sp)
     out = {
         "script": os.path.basename(sp),
+        "workdir": os.path.abspath(workdir),
         "sha256": GE.sha256(sp),
         "begin": " ".join(ir["begin"]["tokens"]),
         "end": " ".join(ir["end"]["tokens"]),
         "ops": [op.to_dict() for op in ir["ops"]],
+        "sessions": [{
+            "index": si,
+            "begin": " ".join(s["begin"]["tokens"]),
+            "end": " ".join(s["end"]["tokens"]) if s.get("end") else "",
+            "op_indexes": [op.index for op in s["ops"]],
+        } for si, s in enumerate(ir.get("sessions") or [])],
     }
     if key:
         _IR_CACHE[key] = out
@@ -84,21 +91,57 @@ def _legacy_run(workdir, sp, overlay):
             pass
 
 
-def _run_and_locate(workdir, sp, overlay):
+def cancel_render():
+    """前端「取消这次渲染」: 结束当前在跑的 GMT 进程树。返回是否真有渲染被取消。"""
+    return GE.cancel_current()
+
+
+def _figure_list(workdir, pdfs, base_pdf):
+    """把本次渲染出的 PDF 整理成画布列表 (key 用相对工作目录的路径, 便于工程文件存取)。"""
+    figs, seen = [], set()
+    for p in pdfs:
+        try:
+            key = os.path.relpath(p, workdir).replace(os.sep, "/")
+        except ValueError:
+            key = p
+        if key in seen:
+            continue
+        seen.add(key)
+        png = os.path.splitext(p)[0] + ".png"
+        figs.append({
+            "key": key,
+            "name": os.path.splitext(os.path.basename(p))[0],
+            "pdf": key,
+            "png": (os.path.relpath(png, workdir).replace(os.sep, "/")
+                    if os.path.exists(png) else ""),
+            "current": (os.path.normcase(os.path.abspath(p)) == os.path.normcase(os.path.abspath(base_pdf))
+                        if base_pdf else False),
+        })
+    return figs
+
+
+def _run_and_locate(workdir, sp, overlay, figure=None, reuse=False):
     """渲染一份图并定位产物 (pdf/png)。默认走直跑通道 (原脚本原样执行), 有命令级
     参数改动时才重写命令; 两者互为兜底, 谁成功用谁。
+    figure: 指定画布 (相对工作目录的 PDF 路径); 多图脚本用它选当前编辑的那张。
+    reuse: 切画布时复用上一次渲染的产物, 不再跑一遍 GMT (同一脚本+同一 overlay)。
     out 含 rc/stdout/stderr/changed/sha_ok/sha256, 失败时含 error。"""
     out = {"baked_elements": 0}
     ops = (overlay or {}).get("ops") or []
-    if ops:
+    res = _run_cache_get(sp, overlay) if reuse else None
+    if res is not None:
+        pass
+    elif ops:
         res = _legacy_run(workdir, sp, overlay)
-        if res.get("rc") != 0 or not res.get("pdf"):
+        # rc=-2 找不到 shell / -3 超时 / -4 用户取消: 换通道重跑没有意义,
+        # 只会让用户再白等一个周期 (界面于是永远"载入中"), 直接按失败返回。
+        if (res.get("rc") != 0 or not res.get("pdf")) and res.get("rc") not in (-2, -3, -4):
             alt = GE.render_direct(workdir, sp)
             if alt.get("rc") == 0 and alt.get("pdf"):
                 res = alt
     else:
         res = GE.render_direct(workdir, sp)
-        if res.get("rc") != 0 or not res.get("pdf"):
+        if (res.get("rc") != 0 or not res.get("pdf")) and res.get("rc") not in (-2, -3, -4):
             alt = _legacy_run(workdir, sp, overlay)
             if alt.get("rc") == 0 and alt.get("pdf"):
                 res = alt
@@ -112,12 +155,16 @@ def _run_and_locate(workdir, sp, overlay):
         "sha_ok": res.get("script_untouched", False),
         "sha256": res.get("orig_sha256", ""),
     })
+    if res.get("rc", -1) == 0 and res.get("pdf"):
+        _run_cache_put(sp, overlay, res)
     if res.get("rc", -1) != 0:
         rc = res.get("rc")
         if rc == -2:
             out["error"] = res.get("stderr") or "未找到可用的 POSIX shell (bash)"
         elif rc == -3:
             out["error"] = res.get("stderr") or "渲染超时"
+        elif rc == -4:
+            out["error"] = "已取消渲染"
         elif rc == 127:
             out["error"] = ("命令未找到 (rc=127)：多半是 GMT 的 `gmt.exe` 没在程序能看到的 PATH 上。"
                             "请确认已安装 GMT 6（本工具会自动在 系统PATH / 注册表PATH / "
@@ -128,8 +175,21 @@ def _run_and_locate(workdir, sp, overlay):
                 rc, _gmt_cause(res.get("stderr") or "", res.get("stdout") or ""))
         return out, None, None, _session_name(sp)
 
+    pdfs = res.get("fresh_pdfs") or res.get("pdfs") or []
     base_pdf = res.get("pdf")
-    base_png = res.get("png")
+    if figure and pdfs:
+        want = os.path.normcase(os.path.abspath(os.path.join(workdir, figure)))
+        for p in pdfs:
+            if os.path.normcase(os.path.abspath(p)) == want:
+                base_pdf = p
+                break
+    base_png = None
+    if base_pdf:
+        cand = os.path.splitext(base_pdf)[0] + ".png"
+        if os.path.exists(cand):
+            base_png = cand
+    if not base_png:
+        base_png = res.get("png")
     name = os.path.splitext(os.path.basename(base_pdf))[0] if base_pdf else _session_name(sp)
     if not base_png:
         for p in ([os.path.splitext(base_pdf)[0] + ".png"] if base_pdf else []) + \
@@ -140,6 +200,9 @@ def _run_and_locate(workdir, sp, overlay):
     out["png_path"] = base_png
     out["name"] = name
     out["pdf_path"] = base_pdf
+    if pdfs and base_pdf and base_pdf not in pdfs:
+        pdfs = [base_pdf] + list(pdfs)
+    out["figures"] = _figure_list(workdir, pdfs, base_pdf)
     if res.get("pdfs") and len(res["pdfs"]) > 1:
         out["pdfs"] = res["pdfs"][:20]
 
@@ -175,8 +238,9 @@ def _bake_svg(workdir, base_pdf, elements):
     return final, rep
 
 
-def render(workdir, script, overlay, elements=None):
+def render(workdir, script, overlay, elements=None, figure=None):
     """命令级 overlay -> GMT 重渲染; 若给 elements 再烘焙成 final.png。
+    figure: 多图脚本时指定当前画布 (相对工作目录的 PDF 路径)。
     返回 dict: rc/stderr/changed/sha_ok/sha256/png_path/baked_elements[/error]。"""
     sp = os.path.join(workdir, script) if not os.path.isabs(script) else script
     if not os.path.exists(sp):
@@ -184,7 +248,7 @@ def render(workdir, script, overlay, elements=None):
                 "sha_ok": False, "sha256": "", "baked_elements": 0}
 
     t0 = time.time()
-    out, base_png, base_pdf, _name = _run_and_locate(workdir, sp, overlay)
+    out, base_png, base_pdf, _name = _run_and_locate(workdir, sp, overlay, figure)
     if out.get("error"):
         out["t_total"] = time.time() - t0
         return out
@@ -211,6 +275,37 @@ def _fingerprint(sp, payload):
             json.dumps(payload or {}, sort_keys=True, ensure_ascii=False))
 
 
+# 同一脚本 + 同一 overlay 的一次渲染会产出全部画布的 PDF。切画布时直接复用这批
+# 产物, 不必为每张图再跑一遍 GMT (多图/大脚本时这一步就是几十秒到几分钟)。
+_RUN_CACHE = {}
+_RUN_CACHE_MAX = 4
+
+
+def _run_cache_get(sp, overlay):
+    key = _fingerprint(sp, {"overlay": overlay, "kind": "run"})
+    hit = _RUN_CACHE.get(key) if key else None
+    if not hit:
+        return None
+    pdfs = hit.get("fresh_pdfs") or hit.get("pdfs") or []
+    if pdfs and all(os.path.exists(p) for p in pdfs):
+        return dict(hit)
+    return None
+
+
+def _run_cache_put(sp, overlay, res):
+    if res.get("rc", -1) != 0:
+        return
+    pdfs = res.get("fresh_pdfs") or res.get("pdfs") or []
+    if not pdfs:
+        return
+    key = _fingerprint(sp, {"overlay": overlay, "kind": "run"})
+    if key is None:
+        return
+    if len(_RUN_CACHE) >= _RUN_CACHE_MAX:
+        _RUN_CACHE.pop(next(iter(_RUN_CACHE)))
+    _RUN_CACHE[key] = dict(res)
+
+
 # 画布重建是最贵的一步 (大脚本: GMT 一跑就是两分钟, PDF->SVG 再十几秒),
 # 而切模式、撤销、载入元素这些操作要的是同一张图 —— 按脚本指纹缓存结果。
 _CACHE = {}
@@ -229,16 +324,17 @@ def _cache_put(key, value):
     _CACHE[key] = value
 
 
-def svg_for(workdir, script, overlay, fresh=False):
+def svg_for(workdir, script, overlay, fresh=False, figure=None):
     """命令级 overlay -> GMT 重渲染 -> 可寻址 SVG (供画布编辑)。
     fresh=True 时忽略缓存强制重渲染 (数据文件变了但脚本没改时必须走这条)。
+    figure: 多图脚本时指定画布 (相对工作目录的 PDF 路径)。
     返回 dict: svg/png_path/name/rc/stderr/changed/sha_ok/sha256[/error/warn/cached/t_*]。"""
     sp = os.path.join(workdir, script) if not os.path.isabs(script) else script
     if not os.path.exists(sp):
         return {"rc": -1, "error": "源脚本不存在: " + script, "stderr": "", "changed": [],
                 "sha_ok": False, "sha256": "", "svg": ""}
 
-    key = _fingerprint(sp, overlay)
+    key = _fingerprint(sp, {"overlay": overlay, "figure": figure})
     if not fresh:
         hit = _cache_get(key)
         if hit is not None:
@@ -248,7 +344,7 @@ def svg_for(workdir, script, overlay, fresh=False):
             return out
 
     t0 = time.time()
-    out, base_png, base_pdf, name = _run_and_locate(workdir, sp, overlay)
+    out, base_png, base_pdf, name = _run_and_locate(workdir, sp, overlay, figure, reuse=not fresh)
     out["t_render"] = time.time() - t0
     if out.get("error"):
         out["svg"] = ""
@@ -277,8 +373,9 @@ def svg_for(workdir, script, overlay, fresh=False):
     return out
 
 
-def bake(workdir, script, overlay, elements):
+def bake(workdir, script, overlay, elements, figure=None):
     """命令级 overlay 重渲染 + 元素 overlay 烘焙 -> 高清 final.png。
+    figure: 多图脚本时指定画布 (相对工作目录的 PDF 路径)。
     返回 dict: png_path/baked_elements/report/rc/sha_ok[/error/warn/element_error]。"""
     sp = os.path.join(workdir, script) if not os.path.isabs(script) else script
     if not os.path.exists(sp):
@@ -286,7 +383,7 @@ def bake(workdir, script, overlay, elements):
                 "sha_ok": False, "sha256": "", "baked_elements": 0}
 
     t0 = time.time()
-    out, base_png, base_pdf, name = _run_and_locate(workdir, sp, overlay)
+    out, base_png, base_pdf, name = _run_and_locate(workdir, sp, overlay, figure)
     if out.get("error"):
         out["t_total"] = time.time() - t0
         return out
@@ -306,9 +403,11 @@ def bake(workdir, script, overlay, elements):
     return out
 
 
-def export_figure(workdir, script, overlay, elements=None, fmt="png", scale=2, quality=92):
+def export_figure(workdir, script, overlay, elements=None, fmt="png", scale=2, quality=92,
+                  figure=None):
     """渲染 (+可选烘焙元素改动) 后按指定格式/倍数导出图片字节。
     fmt: "png" | "jpg"; scale: 相对 PDF 页面的放大倍数; quality: JPG 质量 1-100。
+    figure: 多图脚本时指定画布 (相对工作目录的 PDF 路径)。
     返回 dict: data(base64)/fmt/name/width/height[/error]。"""
     import fitz
     sp = os.path.join(workdir, script) if not os.path.isabs(script) else script
@@ -319,7 +418,7 @@ def export_figure(workdir, script, overlay, elements=None, fmt="png", scale=2, q
         scale = max(0.5, min(12.0, float(scale)))
     except (TypeError, ValueError):
         scale = 2.0
-    out, base_png, base_pdf, name = _run_and_locate(workdir, sp, overlay)
+    out, base_png, base_pdf, name = _run_and_locate(workdir, sp, overlay, figure)
     if out.get("error"):
         return out
     src_doc = None

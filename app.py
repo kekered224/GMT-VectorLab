@@ -5,7 +5,7 @@ app.py —— GMT VectorLab 桌面程序 (pywebview + WebView2)
 
 一个真正的原生窗口桌面 App, 不开浏览器、不占端口:
   - 前端 ui.html (明亮简洁风) 内联 fieldkit.js 后交给 WebView2 渲染;
-  - Python 通过 js_api 直接给 JS 提供 get_ir / render / save_overlay / open_overlay;
+  - Python 通过 js_api 直接给 JS 提供 get_ir / render / open_overlay;
   - 渲染走 core.py: 命令级 overlay -> GMT 重渲染 -> (可选) 烘焙 #2 元素 overlay;
   - 源脚本永远只读 (sha256 前后比对)。
 
@@ -115,7 +115,7 @@ class Api:
             return {"error": traceback.format_exc()}
 
     # ---- 渲染 (命令级 + 可选元素级) ----
-    def render(self, overlay_json, elements_json=None, script=None):
+    def render(self, overlay_json, elements_json=None, script=None, figure=None):
         try:
             self.script = self._resolve(script)
             if not self.script:
@@ -123,7 +123,7 @@ class Api:
                         "changed": [], "sha_ok": False, "baked_elements": 0}
             overlay = json.loads(overlay_json) if overlay_json else {"ops": []}
             elements = json.loads(elements_json) if elements_json else None
-            out = core.render(self.work, self.script, overlay, elements)
+            out = core.render(self.work, self.script, overlay, elements, figure=figure)
             out["script"] = self.script
             out["work"] = self.work
             png = out.get("png_path")
@@ -136,14 +136,15 @@ class Api:
                     "changed": [], "sha_ok": False, "baked_elements": 0}
 
     # ---- 画布模式: 命令级重渲染 -> 可编辑 SVG (+ 顺带回 IR, 省一次往返) ----
-    def get_canvas(self, overlay_json=None, script=None, fresh=False):
+    def get_canvas(self, overlay_json=None, script=None, fresh=False, figure=None):
         try:
             self.script = self._resolve(script)
             if not self.script:
                 return {"rc": -1, "error": "尚未选择 GMT 脚本", "svg": "", "stderr": "",
                         "changed": [], "sha_ok": False}
             overlay = json.loads(overlay_json) if overlay_json else {"ops": []}
-            out = core.svg_for(self.work, self.script, overlay, fresh=bool(fresh))
+            out = core.svg_for(self.work, self.script, overlay, fresh=bool(fresh),
+                               figure=figure)
             out["script"] = self.script
             out["work"] = self.work
             try:
@@ -159,15 +160,22 @@ class Api:
             return {"rc": -1, "error": traceback.format_exc(), "stderr": traceback.format_exc(),
                     "svg": "", "changed": [], "sha_ok": False}
 
+    # ---- 取消当前渲染 (长任务询问框里的「取消这次渲染」) ----
+    def cancel_render(self):
+        try:
+            return {"cancelled": core.cancel_render()}
+        except Exception:
+            return {"cancelled": False}
+
     # ---- 应用元素 overlay -> 高清 final.png 预览 ----
-    def bake(self, overlay_json, elements_json, script=None):
+    def bake(self, overlay_json, elements_json, script=None, figure=None):
         try:
             self.script = self._resolve(script)
             if not self.script:
                 return {"rc": -1, "error": "尚未选择 GMT 脚本", "baked_elements": 0}
             overlay = json.loads(overlay_json) if overlay_json else {"ops": []}
             elements = json.loads(elements_json) if elements_json else {}
-            out = core.bake(self.work, self.script, overlay, elements)
+            out = core.bake(self.work, self.script, overlay, elements, figure=figure)
             out["script"] = self.script
             out["work"] = self.work
             png = out.get("png_path")
@@ -179,7 +187,8 @@ class Api:
             return {"rc": -1, "error": traceback.format_exc(), "baked_elements": 0}
 
     # ---- 渲染 (+可选烘焙元素) 后按格式导出图片 ----
-    def export_png(self, overlay_json, elements_json, script=None, fmt="png", scale=4, quality=92):
+    def export_png(self, overlay_json, elements_json, script=None, fmt="png", scale=4,
+                   quality=92, figure=None):
         try:
             self.script = self._resolve(script)
             if not self.script:
@@ -187,7 +196,7 @@ class Api:
             overlay = json.loads(overlay_json) if overlay_json else {"ops": []}
             elements = json.loads(elements_json) if elements_json else {}
             out = core.export_figure(self.work, self.script, overlay, elements,
-                                     fmt=fmt, scale=scale, quality=quality)
+                                     fmt=fmt, scale=scale, quality=quality, figure=figure)
             if out.get("error") or not out.get("data"):
                 return {"error": out.get("error") or "未生成图件, 无法导出"}
             if not self.win:
@@ -209,21 +218,46 @@ class Api:
         except Exception:
             return {"error": traceback.format_exc()}
 
-    # ---- 原生保存 overlay ----
-    def save_overlay(self, json_str):
+    # ---- 工程文件 (.gvlproj): 命令级改动 + 每张画布的元素改动 ----
+    def save_project(self, json_str):
+        try:
+            if not self.win:
+                return None
+            name = (os.path.splitext(self.script or "figure")[0] or "figure") + ".gvlproj"
+            res = self.win.create_file_dialog(
+                FileDialog.SAVE, save_filename=name,
+                file_types=("GMT VectorLab 工程 (*.gvlproj)",))
+            if not res:
+                return None
+            path = res[0] if isinstance(res, (list, tuple)) else res
+            if not path.lower().endswith(".gvlproj"):
+                path += ".gvlproj"
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(json_str)
+            return path
+        except Exception:
+            return {"error": traceback.format_exc()}
+
+    # ---- 打开工程: 切回工程记录的脚本, 并把 command/element 改动交给前端 ----
+    def open_project(self):
         try:
             if not self.win:
                 return None
             res = self.win.create_file_dialog(
-                FileDialog.SAVE, save_filename="overlay_gui.json",
-                file_types=("JSON 文件 (*.json)",))
+                FileDialog.OPEN, file_types=("GMT VectorLab 工程 (*.gvlproj)",))
             if not res:
                 return None
             path = res[0] if isinstance(res, (list, tuple)) else res
-            if not path.lower().endswith(".json"):
-                path += ".json"
-            open(path, "w", encoding="utf-8").write(json_str)
-            return path
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            work = data.get("work") or self.work
+            script = data.get("script") or ""
+            sp = script if os.path.isabs(script) else os.path.join(work, script)
+            if not script or not os.path.isfile(sp):
+                return {"error": "工程引用的脚本已不存在：\n%s\n请先用「打开脚本」选定脚本，再打开工程。" % sp}
+            self.work = os.path.dirname(os.path.abspath(sp))
+            self.script = os.path.basename(sp)
+            return {"path": path, "work": self.work, "script": self.script, "data": data}
         except Exception:
             return {"error": traceback.format_exc()}
 
@@ -288,8 +322,8 @@ def main():
         "GMT VectorLab · 画布式改图",
         html=build_html(),
         js_api=api,
-        width=1360, height=880, min_size=(1080, 680),
-        background_color="#f5f6f8", text_select=True, zoomable=True,
+        width=1360, height=880, min_size=(960, 640),
+        background_color="#f5f6f8", text_select=True, zoomable=False,
     )
     api.win = win
     webview.start(debug=bool(os.environ.get("GMT_DEBUG")))

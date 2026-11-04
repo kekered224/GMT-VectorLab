@@ -1,0 +1,13 @@
+{
+  "note": "演示多图脚本的命令级改动: index 3 属于第二张图 (stations_xy), 只影响它; 第一张图 scs_map 保持原样。",
+  "ops": [
+    {
+      "index": 3,
+      "module": "plot",
+      "set": {
+        "-S": "s0.8c",
+        "-G": "coral"
+      }
+    }
+  ]
+}
