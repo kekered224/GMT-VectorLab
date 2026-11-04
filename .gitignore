@@ -12,11 +12,16 @@ dist/
 
 # 运行时生成
 gmt_vectorlab_selftest.json
+rendered.sh
+final.svg
 *.pdf
 *.png
 work/
 .tmp/
 _tmp_*/
+
+# 工具产物
+.trae-html-share-packages/
 
 # 测试 / 检查缓存
 .pytest_cache/
